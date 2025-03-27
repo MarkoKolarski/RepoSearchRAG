@@ -1,16 +1,30 @@
-from git import Repo
 import os
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
-from transformers import pipeline
-import nltk
-from nltk.corpus import wordnet
-import chardet
 import re
+import chardet
+import nltk
+from typing import Dict, List, Optional
+from git import Repo
+from sentence_transformers import SentenceTransformer
+from transformers import pipeline
+from nltk.corpus import wordnet
+import numpy as np
+import faiss
 
-# Cloning repository
-def clone_repository(url, dest_folder):
+# Ensure NLTK resources are downloaded
+nltk.download('punkt', quiet=True)
+nltk.download('wordnet', quiet=True)
+
+def clone_repository(url: str, dest_folder: str) -> Optional[str]:
+    """
+    Clone a GitHub repository to a local directory.
+    
+    Args:
+        url (str): GitHub repository URL
+        dest_folder (str): Destination folder for cloning
+    
+    Returns:
+        Optional[str]: Path to cloned repository or None if failed
+    """
     if os.path.exists(dest_folder):
         print(f"Folder {dest_folder} already exists. Skipping cloning.")
         return dest_folder
@@ -24,38 +38,53 @@ def clone_repository(url, dest_folder):
         print(f"Error during cloning: {e}")
         return None
 
-def read_file_with_encoding(file_path):
-    # First, try to detect the encoding
+def read_file_with_encoding(file_path: str) -> Optional[str]:
+    """
+    Read file with intelligent encoding detection.
+    
+    Args:
+        file_path (str): Path to the file
+    
+    Returns:
+        Optional[str]: File contents or None if reading fails
+    """
     try:
         with open(file_path, 'rb') as file:
             raw_data = file.read()
             result = chardet.detect(raw_data)
             detected_encoding = result['encoding']
         
-        # Try to read with the detected encoding
         with open(file_path, 'r', encoding=detected_encoding, errors='replace') as f:
             return f.read()
     except Exception as e:
-        # Fallback encodings if detection fails
         fallback_encodings = ['utf-8', 'latin-1', 'ISO-8859-1', 'cp1252']
         
         for encoding in fallback_encodings:
             try:
                 with open(file_path, 'r', encoding=encoding, errors='replace') as f:
                     return f.read()
-            except Exception as inner_e:
-                print(f"Error reading {file_path} with encoding {encoding}: {inner_e}")
+            except Exception:
+                continue
         
         print(f"Failed to read {file_path} with all encoding attempts.")
         return None
 
-def prepare_repository_files(repo_path):
+def prepare_repository_files(repo_path: str) -> Dict[str, str]:
+    """
+    Collect and read files from repository.
+    
+    Args:
+        repo_path (str): Path to repository
+    
+    Returns:
+        Dict[str, str]: Dictionary of file paths and their contents
+    """
     allowed_extensions = ['.py', '.js', '.md', '.txt', '.json']
     
-    def collect_files(directory):
+    def collect_files(directory: str) -> List[str]:
         file_paths = []
         
-        for root, dirs, files in os.walk(directory):
+        for root, _, files in os.walk(directory):
             for file in files:
                 full_path = os.path.join(root, file)
                 
@@ -74,164 +103,220 @@ def prepare_repository_files(repo_path):
     
     return file_contents
 
+class CodeRAGSystem:
+    def __init__(
+        self, 
+        embedding_model: str = 'all-MiniLM-L6-v2', 
+        summarization_model: str = "facebook/bart-large-cnn"
+    ):
+        """
+        Initialize CodeRAG system with embeddings and summarization.
+        
+        Args:
+            embedding_model (str): Sentence transformer model
+            summarization_model (str): Hugging Face summarization model
+        """
+        # Embedding model
+        self.embedding_model = SentenceTransformer(embedding_model)
+        
+        # Summarization pipeline
+        try:
+            self.summarizer = pipeline("summarization", model=summarization_model)
+        except Exception as e:
+            print(f"Summarization model load error: {e}")
+            self.summarizer = None
 
-# Embeddings class
-class RepositoryEmbedder:
-    def __init__(self, model_name='all-MiniLM-L6-v2'):
-        self.model = SentenceTransformer(model_name)
-        self.index = None
+        # FAISS index
+        self.faiss_index = None
         self.file_paths = []
 
-    def create_embeddings(self, file_contents):
+    def create_embeddings(self, file_contents: Dict[str, str]):
+        """
+        Create embeddings for repository files.
+        
+        Args:
+            file_contents (Dict[str, str]): Dictionary of file paths and contents
+        """
         contents = list(file_contents.values())
         self.file_paths = list(file_contents.keys())
-        embeddings = self.model.encode(contents)
+        
+        embeddings = self.embedding_model.encode(contents)
         dimension = embeddings.shape[1]
-        self.index = faiss.IndexFlatL2(dimension)
-        self.index.add(embeddings)
-        return self.index
+        
+        # L2 distance index
+        self.faiss_index = faiss.IndexFlatL2(dimension)
+        self.faiss_index.add(embeddings)
 
-    def search(self, query, top_k=10):
-        if self.index is None:
-            raise ValueError("Index not created. Run create_embeddings first.")
-        query_embedding = self.model.encode([query])
-        distances, indices = self.index.search(query_embedding, top_k)
+    def retrieve_files(self, query: str, top_k: int = 10) -> List[str]:
+        """
+        Retrieve most relevant files for a query.
+        
+        Args:
+            query (str): Search query
+            top_k (int): Number of top results to return
+        
+        Returns:
+            List[str]: List of relevant file paths
+        """
+        if self.faiss_index is None:
+            raise ValueError("Embeddings not created. Call create_embeddings first.")
+        
+        query_embedding = self.embedding_model.encode([query])
+        distances, indices = self.faiss_index.search(query_embedding, top_k)
+        
         return [self.file_paths[i] for i in indices[0]]
 
-# Retriever class
-class Retriever:
-    def __init__(self, embedder):
-        self.embedder = embedder
+    def generate_summary(self, file_content: str, max_length: int = 150) -> str:
+        """
+        Generate summary for a file content with dynamic length adjustment.
+        
+        Args:
+            file_content (str): File content to summarize
+            max_length (int): Maximum summary length
+        
+        Returns:
+            str: Summarized content
+        """
+        if not self.summarizer:
+            return "Summarization unavailable"
 
-    def retrieve(self, query, top_k=10):
-        return self.embedder.search(query, top_k)
+        # Trim extremely long inputs
+        if len(file_content) > 1000:
+            file_content = file_content[:1000]
+
+        try:
+            # Dynamically adjust max_length
+            adjusted_max_length = min(
+                max_length, 
+                max(30, int(len(file_content) * 0.3))  # Use 30% of input length, minimum 30
+            )
+            
+            # Ensure min_length is less than max_length
+            adjusted_min_length = max(10, int(adjusted_max_length * 0.5))
+
+            summary = self.summarizer(
+                file_content, 
+                max_length=adjusted_max_length, 
+                min_length=adjusted_min_length, 
+                do_sample=False
+            )
+            
+            return summary[0]['summary_text'] if summary else "Unable to generate summary"
+        except Exception as e:
+            print(f"Summary generation error: {e}")
+            return "Unable to generate summary"
 
 class QueryExpander:
     def __init__(self):
-        # Ensure all necessary NLTK resources are downloaded
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            nltk.download('punkt', quiet=True)
-        
-        try:
-            nltk.data.find('corpora/wordnet')
-        except LookupError:
-            nltk.download('wordnet', quiet=True)
+        """
+        Initialize query expander with NLTK resources.
+        """
+        nltk.download('punkt', quiet=True)
+        nltk.download('wordnet', quiet=True)
 
-    def get_synonyms(self, word):
+    def expand_query(self, query: str, context_words: Optional[List[str]] = None) -> List[str]:
+        """
+        Expand query with synonyms and context.
+        
+        Args:
+            query (str): Original query
+            context_words (Optional[List[str]]): Additional context words
+        
+        Returns:
+            List[str]: List of expanded queries
+        """
+        try:
+            tokens = nltk.word_tokenize(query.lower())
+            
+            # Get synonyms
+            expanded_tokens = tokens + [
+                syn for token in tokens 
+                for syn in self._get_synonyms(token)[:2]
+            ]
+            
+            # Add context words
+            if context_words:
+                expanded_tokens.extend(context_words)
+            
+            # Generate query variations
+            variations = [
+                ' '.join(expanded_tokens),
+                query.lower(),
+                ' '.join(reversed(tokens))
+            ]
+            
+            return list(set(variations))
+        except Exception as e:
+            print(f"Query expansion error: {e}")
+            return [query.lower()]
+
+    def _get_synonyms(self, word: str) -> List[str]:
+        """
+        Get synonyms for a word.
+        
+        Args:
+            word (str): Word to find synonyms for
+        
+        Returns:
+            List[str]: List of synonyms
+        """
         synonyms = set()
         try:
             for syn in wordnet.synsets(word):
                 for lemma in syn.lemmas():
                     synonyms.add(lemma.name().replace('_', ' '))
         except Exception as e:
-            print(f"Error getting synonyms for {word}: {e}")
+            print(f"Synonym retrieval error for {word}: {e}")
         return list(synonyms)
 
-    def simple_tokenize(self, query):
-        # Use a simple tokenization method as a fallback
-        # Remove punctuation and split on whitespace
-        return re.findall(r'\w+', query.lower())
-
-    def context_expand_query(self, query, context_words=None):
-        try:
-            # First try NLTK tokenization
-            try:
-                tokens = nltk.word_tokenize(query.lower())
-            except Exception:
-                # Fallback to simple tokenization if NLTK fails
-                tokens = self.simple_tokenize(query)
-
-            # Get synonyms for each token, limit to first 2
-            expanded_tokens = tokens + [
-                syn for token in tokens 
-                for syn in self.get_synonyms(token)[:2]
-            ]
-
-            # Add context words if provided
-            if context_words:
-                expanded_tokens.extend(context_words)
-
-            return ' '.join(expanded_tokens)
-        except Exception as e:
-            print(f"Error in context_expand_query: {e}")
-            return query.lower()
-
-    def generate_related_queries(self, query, num_variations=3):
-        try:
-            # Different query variations
-            variations = [
-                self.context_expand_query(query),  # Synonym-expanded query
-                query.lower(),  # Lowercase query
-                ' '.join(reversed(query.split()))  # Reversed word order
-            ]
-            
-            # Truncate to requested number of variations
-            return variations[:num_variations]
-        except Exception as e:
-            print(f"Error generating related queries: {e}")
-            return [query.lower()]
-
-# LLM Summarization class
-class LLMSummarizer:
-    def __init__(self, model="facebook/bart-large-cnn"):
-        try:
-            self.summarizer = pipeline("summarization", model=model)
-        except Exception as e:
-            print(f"Error initializing summarizer: {e}")
-            self.summarizer = None
-
-    def generate_summary(self, file_contents, max_length=150, min_length=30):
-        # Handle various potential input issues
-        if not file_contents or not isinstance(file_contents, str):
-            return "Unable to generate summary. Invalid input."
-
-        # Trim extremely long or very short inputs
-        if len(file_contents) > 1000:
-            file_contents = file_contents[:1000]
-        
-        if len(file_contents) < 50:
-            return file_contents  # Return the content as-is if too short
-
-        try:
-            # Dynamically adjust max_length based on input length
-            max_length = min(max_length, max(30, int(len(file_contents) * 0.3)))
-            min_length = min(min_length, max_length - 10)
-
-            # Attempt summarization
-            summary = self.summarizer(
-                file_contents, 
-                max_length=max_length, 
-                min_length=min_length, 
-                do_sample=False
-            )
-
-            # Extract summary text, handling potential empty results
-            if summary and isinstance(summary, list) and summary[0]:
-                return summary[0].get('summary_text', "Unable to generate summary.")
-            
-            return "Unable to generate summary."
-
-        except Exception as e:
-            print(f"Summary generation error: {e}")
-            return "Unable to generate summary."
-
-# Evaluation class
 class RAGEvaluator:
-    def __init__(self, ground_truth):
+    def __init__(self, ground_truth: Dict[str, List[str]]):
+        """
+        Initialize evaluator with ground truth data.
+        
+        Args:
+            ground_truth (Dict[str, List[str]]): Reference file mappings
+        """
         self.ground_truth = ground_truth
 
-    def calculate_recall_at_k(self, retrieved_results, k=10):
+    def calculate_recall(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
+        """
+        Calculate Recall@K metric.
+        
+        Args:
+            retrieved_results (Dict[str, List[str]]): Retrieved results for each query
+            k (int): Top-K results to consider
+        
+        Returns:
+            float: Average recall
+        """
         recalls = []
         for query, expected_files in self.ground_truth.items():
-            expected_set = set(expected_files)
             retrieved_set = set(retrieved_results.get(query, [])[:k])
-            recall = len(expected_set.intersection(retrieved_set)) / len(expected_set) if expected_set else (1.0 if not retrieved_set else 0.0)
+            expected_set = set(expected_files)
+            
+            recall = len(retrieved_set.intersection(expected_set)) / len(expected_set) \
+                if expected_set else (1.0 if not retrieved_set else 0.0)
+            
             recalls.append(recall)
+        
         return np.mean(recalls)
 
-    def generate_report(self, retrieved_results, k=10):
-        recall = self.calculate_recall_at_k(retrieved_results, k)
+    def generate_report(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> Dict:
+        """
+        Generate evaluation report.
+        
+        Args:
+            retrieved_results (Dict[str, List[str]]): Retrieved results
+            k (int): Top-K results to analyze
+        
+        Returns:
+            Dict: Evaluation metrics
+        """
+        recall = self.calculate_recall(retrieved_results, k)
         print(f"Evaluation Report:\nRecall@{k}: {recall:.4f}")
-        return {'recall': recall, 'k': k}
+        
+        return {
+            'recall': recall,
+            'k': k
+        }
