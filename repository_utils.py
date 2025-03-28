@@ -324,9 +324,8 @@ class AdvancedCodeRAGSystem:
         embedding_model: Union[str, object] = 'all-MiniLM-L6-v2',
         reranker_model: Optional[str] = None,
         retrieval_strategy: str = 'default',
-        summarizer: Optional[AdvancedSummarizer] = None
-
-        
+        summarizer: Optional[AdvancedSummarizer] = None,
+        cache_capacity: int = 1000  # Added parameter for cache size
     ):
         """
         Initialize Advanced Code Retrieval and Generation System.
@@ -336,6 +335,7 @@ class AdvancedCodeRAGSystem:
             reranker_model (str, optional): Cross-encoder reranking model
             retrieval_strategy (str): Strategy for document retrieval
             summarization_model (str): Model for text summarization
+            cache_capacity (int): Maximum number of entries to store in cache
         """
         # Lazy loading configuration
         self._embedding_model_name = embedding_model
@@ -345,12 +345,17 @@ class AdvancedCodeRAGSystem:
         # Placeholders for models
         self._embedding_model = None
         self._reranker = None
+        
+        # Initialize LRU caches for embeddings
+        self.query_embedding_cache = LRUCache(capacity=cache_capacity)
+        self.content_embedding_cache = LRUCache(capacity=cache_capacity)
 
         # Retrieval strategies with fallback to default
         retrieval_strategies = {
             'default': self._default_retrieval,
             'probabilistic': self._probabilistic_retrieval,
-            'diverse': self._diverse_retrieval
+            'diverse': self._diverse_retrieval,
+            'advanced': self._diverse_retrieval
         }
         self.retrieval_strategy = retrieval_strategies.get(
             retrieval_strategy, 
@@ -488,6 +493,43 @@ class AdvancedCodeRAGSystem:
             candidates.remove(best_index)
     
         return selected_indices
+    
+    def _get_cached_embedding(self, text, cache):
+        """Get embedding from cache or compute and cache it"""
+        text_hash = hash(text)
+        embedding = cache.get(text_hash)
+        if embedding is not None:
+            return embedding
+            
+        embedding = self.embedding_model.encode([text])[0]
+        cache.put(text_hash, embedding)
+        return embedding
+        
+    def _get_cached_embeddings(self, texts, cache):
+        """Get embeddings for multiple texts, using cache where possible"""
+        embeddings = []
+        uncached_indices = []
+        uncached_texts = []
+        
+        for i, text in enumerate(texts):
+            text_hash = hash(text)
+            embedding = cache.get(text_hash)
+            
+            if embedding is not None:
+                embeddings.append(embedding)
+            else:
+                uncached_indices.append(i)
+                uncached_texts.append(text)
+                embeddings.append(None)
+        
+        if uncached_texts:
+            uncached_embeddings = self.embedding_model.encode(uncached_texts)
+            for i, idx in enumerate(uncached_indices):
+                text_hash = hash(texts[idx])
+                cache.put(text_hash, uncached_embeddings[i])
+                embeddings[idx] = uncached_embeddings[i]
+        
+        return np.array(embeddings)
 
     def advanced_retrieve(
         self, 
@@ -496,7 +538,7 @@ class AdvancedCodeRAGSystem:
         top_k: int = 10
     ) -> List[str]:
         """
-        Enhanced retrieval with context-aware techniques
+        Enhanced retrieval with context-aware techniques and caching
         
         Args:
             query (str): Search query
@@ -509,16 +551,20 @@ class AdvancedCodeRAGSystem:
         # Preprocess query: remove special characters, lowercase
         clean_query = re.sub(r'[^a-zA-Z0-9\s]', '', query).lower()
         
-        # Embed contents with more context
+        # Prepare content list with context
         content_list = [
             f"File Path: {path}\nContent Context: {content[:500]}"
             for path, content in file_contents.items()
         ]
         file_paths = list(file_contents.keys())
         
-        # Use embedding model for semantic understanding
-        embeddings = self.embedding_model.encode(content_list)
-        query_embedding = self.embedding_model.encode([clean_query])[0]
+        # Use cached embeddings for content
+        start_time = time.time()
+        embeddings = self._get_cached_embeddings(content_list, self.content_embedding_cache)
+        
+        # Use cached embedding for query
+        query_embedding = self._get_cached_embedding(clean_query, self.query_embedding_cache)
+        #print(f"Embedding retrieval took {time.time() - start_time:.2f} seconds")
         
         # Pass file_paths to the retrieval strategy
         if self.retrieval_strategy == self._diverse_retrieval:
