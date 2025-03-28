@@ -10,6 +10,8 @@ import chardet
 from git import Repo
 from listwise_reranker import ListwiseReranker
 import multiprocessing
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 
 
@@ -149,7 +151,14 @@ class LRUCache:
 
 
 class AdvancedSummarizer:
-    def __init__(self):
+    def __init__(self, model_name: str = "google/flan-t5-small", max_length: int = 150):
+        """
+        Initialize Advanced Summarizer with LLM capabilities.
+        
+        Args:
+            model_name (str): Hugging Face model name for the language model
+            max_length (int): Maximum length of generated summaries
+        """
         # Download necessary NLTK resources
         nltk.download('punkt', quiet=True)
         nltk.download('stopwords', quiet=True)
@@ -161,6 +170,31 @@ class AdvancedSummarizer:
             'utils': ['helper', 'generator', 'action', 'message'],
             'system': ['auto', 'import', 'configuration']
         }
+        
+        # Initialize language model and tokenizer
+        self.model_name = model_name
+        self.max_length = max_length
+        self._tokenizer = None
+        self._model = None
+        
+        # Device configuration
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    @property
+    def tokenizer(self):
+        """Lazy loading of tokenizer"""
+        if self._tokenizer is None:
+            print(f"Loading tokenizer for {self.model_name}...")
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        return self._tokenizer
+    
+    @property
+    def model(self):
+        """Lazy loading of model"""
+        if self._model is None:
+            print(f"Loading language model {self.model_name}...")
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name).to(self.device)
+        return self._model
 
     def extract_module_context(self, file_path: str) -> str:
         """
@@ -180,9 +214,44 @@ class AdvancedSummarizer:
         
         return 'general'
 
+    def summarize_with_llm(self, text: str, prompt_template: str) -> str:
+        """
+        Generate summary using the language model.
+        
+        Args:
+            text (str): Text to summarize
+            prompt_template (str): Template for the prompt
+        
+        Returns:
+            str: Generated summary
+        """
+        # Truncate text if too long to fit in model context
+        max_input_length = self.tokenizer.model_max_length - 50  # Leave room for prompt
+        input_ids = self.tokenizer.encode(text, truncation=True, max_length=max_input_length)
+        truncated_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+        
+        # Create prompt - Fix: Use format with named parameters instead of direct substitution
+        prompt = prompt_template.format(text=truncated_text, lang=self.model_name)
+        
+        # Generate summary
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        
+        # Generate with parameters for better summaries
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_length=self.max_length,
+                min_length=30,
+                num_beams=4,
+                no_repeat_ngram_size=3,
+                early_stopping=True,
+            )
+        
+        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
     def summarize_code_file(self, text: str, file_path: str) -> Dict[str, Any]:
         """
-        Advanced code file summarization.
+        Advanced code file summarization with LLM.
         
         Args:
             text (str): File content
@@ -191,32 +260,73 @@ class AdvancedSummarizer:
         Returns:
             Dict with summary components
         """
-        # Regex patterns for extracting key information
+        # Extract basic information with regex
         import_pattern = r'import\s+(?:(\w+)\s+from\s+[\'"](.+)[\'"]|{([^}]+)})'
         export_pattern = r'export\s+(?:default\s+)?(?:const|function|class)\s+(\w+)'
         
-        # Extract imports
+        # Extract imports and exports
         imports = re.findall(import_pattern, text)
         imports = [
             imp[0] or imp[1] or imp[2].strip() 
             for imp in imports if any(imp)
         ]
         
-        # Extract exports
         exports = re.findall(export_pattern, text)
         
         # Module context
         module_context = self.extract_module_context(file_path)
         
-        return {
-            'module_type': module_context,
-            'imports': imports[:3],  # Limit to top 3
-            'exports': exports[:3],  # Limit to top 3
+        # Determine programming language from file extension
+        file_ext = os.path.splitext(file_path)[1].lower()
+        lang_map = {
+            '.py': 'Python',
+            '.js': 'JavaScript',
+            '.ts': 'TypeScript',
+            '.java': 'Java',
+            '.cpp': 'C++',
+            '.c': 'C',
+            '.cs': 'C#',
+            '.go': 'Go',
+            '.rb': 'Ruby',
+            '.php': 'PHP',
+            '.swift': 'Swift',
+            '.kt': 'Kotlin'
         }
+        lang = lang_map.get(file_ext, 'Unknown')
+        
+        # Create LLM prompt for code summary
+        code_prompt = f"Summarize this {lang} code concisely: {{text}}"
+
+        try:
+            # Get summary from LLM
+            llm_summary = self.summarize_with_llm(
+                text[:1500],  # Limit to prevent token overflow
+                code_prompt
+            )
+            
+            # Combine structured and LLM-generated information
+            return {
+                'module_type': module_context,
+                'language': lang,
+                'imports': imports[:5],  # Limit to top 5
+                'exports': exports[:5],  # Limit to top 5
+                'llm_summary': llm_summary
+            }
+        
+        except Exception as e:
+            print(f"LLM summary generation error: {e}")
+            # Fallback to basic summary
+            return {
+                'module_type': module_context,
+                'language': lang,
+                'imports': imports[:5],
+                'exports': exports[:5],
+                'summary': text[:200]
+            }
 
     def summarize_text_file(self, text: str, file_path: str) -> Dict[str, Any]:
         """
-        Advanced text file summarization.
+        Advanced text file summarization with LLM.
         
         Args:
             text (str): File content
@@ -227,48 +337,78 @@ class AdvancedSummarizer:
         """
         filename = os.path.basename(file_path).lower()
         
-        # Specific strategies for different file types
+        # Special handling for specific file types
         if 'license' in filename or 'notice' in filename:
             # Extract license information
-            license_match = re.search(r'(Apache|MIT|BSD|GPL)\s+(?:License)?\s*(\d+\.\d+)', text, re.IGNORECASE)
+            license_match = re.search(r'(Apache|MIT|BSD|GPL)\s+(?:License)?\s*(\d+\.\d+)?', text, re.IGNORECASE)
             if license_match:
+                license_type = license_match.group(1)
+                license_version = license_match.group(2) if license_match.group(2) else ""
+                license_info = f"{license_type} {license_version}".strip()
                 return {
                     'type': 'license',
-                    'details': f"{license_match.group(1)} {license_match.group(2)}"
+                    'details': license_info
                 }
         
-        elif 'privacy' in filename:
-            # Extract key privacy statements
-            privacy_keywords = ['collect', 'store', 'transmit', 'data', 'information']
-            privacy_summary = ' '.join([
-                word for word in text.lower().split() 
-                if word in privacy_keywords
-            ][:10])
-            
-            return {
-                'type': 'privacy_policy',
-                'summary': privacy_summary
-            }
+        elif 'readme' in filename:
+            # Create README-specific prompt
+            readme_prompt = """Generate a concise summary of this README document:
+{text}
+
+Focus on the project purpose, key features, and main components.
+"""
+            try:
+                llm_summary = self.summarize_with_llm(text, readme_prompt)
+                return {
+                    'type': 'readme',
+                    'summary': llm_summary
+                }
+            except Exception as e:
+                print(f"README summary error: {e}")
         
         elif 'changelog' in filename:
             # Extract version and key updates
             version_match = re.search(r'(\d+\.\d+\.\d+)', text)
             version = version_match.group(1) if version_match else 'Latest'
             
-            return {
-                'type': 'changelog',
-                'version': version
-            }
+            changelog_prompt = """Summarize the key updates in this changelog:
+{text}
+
+Focus on major changes, features, and fixes.
+"""
+            try:
+                llm_summary = self.summarize_with_llm(text, changelog_prompt)
+                return {
+                    'type': 'changelog',
+                    'version': version,
+                    'summary': llm_summary
+                }
+            except Exception as e:
+                print(f"Changelog summary error: {e}")
         
-        # Fallback for generic text files
-        return {
-            'type': 'text',
-            'summary': text[:200]
-        }
+        # General text summarization
+        try:
+            # Default text summary prompt
+            text_prompt = """Summarize this document concisely:
+{text}
+
+Focus on the main topic and key points.
+"""
+            llm_summary = self.summarize_with_llm(text, text_prompt)
+            return {
+                'type': 'text',
+                'summary': llm_summary
+            }
+        except Exception as e:
+            print(f"Text summary error: {e}")
+            return {
+                'type': 'text',
+                'summary': text[:300]  # Fallback to truncation
+            }
 
     def generate_summary(self, text: str, file_path: str) -> str:
         """
-        Comprehensive summary generation.
+        Comprehensive summary generation with LLM enhancement.
         
         Args:
             text (str): File content
@@ -277,42 +417,67 @@ class AdvancedSummarizer:
         Returns:
             str: Generated summary
         """
-        # Truncate very long texts
-        text = text[:2048]
+        # Check if file exists and is readable
+        if not os.path.exists(file_path):
+            return f"File not found: {file_path}"
+        
+        # Truncate very long texts for processing efficiency
+        text = text[:3000]  # Increased limit for LLM context
         
         try:
-            # Determine file type based on content and path
-            if any(keyword in text.lower() for keyword in ['import', 'export', 'const', 'function']):
+            file_ext = os.path.splitext(file_path)[1].lower()
+            filename = os.path.basename(file_path).lower()
+            
+            # Determine file type and use appropriate summarization method
+            if file_ext in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.go', '.rb']:
                 # Code file
                 summary_data = self.summarize_code_file(text, file_path)
                 
-                # Construct summary string
-                if summary_data['imports'] or summary_data['exports']:
-                    summary_parts = []
-                    if summary_data['imports']:
-                        summary_parts.append(f"Imports: {', '.join(summary_data['imports'])}")
-                    if summary_data['exports']:
-                        summary_parts.append(f"Exports: {', '.join(summary_data['exports'])}")
-                    
-                    return f"{summary_data['module_type'].capitalize()} Module | {' | '.join(summary_parts)}"
+                # Format with LLM summary if available
+                if 'llm_summary' in summary_data:
+                    return f"{summary_data['language']} | {summary_data['module_type'].capitalize()} Module | {summary_data['llm_summary']}"
                 
-            elif any(keyword in file_path.lower() for keyword in ['license', 'notice', 'privacy', 'changelog']):
-                # Text documentation
+                # Fallback to structured summary
+                imports_str = f"Imports: {', '.join(summary_data['imports'])}" if summary_data['imports'] else ""
+                exports_str = f"Exports: {', '.join(summary_data['exports'])}" if summary_data['exports'] else ""
+                
+                parts = [p for p in [summary_data['language'], 
+                                    f"{summary_data['module_type'].capitalize()} Module", 
+                                    imports_str, 
+                                    exports_str] if p]
+                
+                return " | ".join(parts)
+                
+            elif any(keyword in filename for keyword in ['readme', 'license', 'changelog', 'notice', 'contributing']):
+                # Documentation file
                 summary_data = self.summarize_text_file(text, file_path)
                 
                 if summary_data['type'] == 'license':
                     return f"License: {summary_data['details']}"
-                elif summary_data['type'] == 'privacy_policy':
-                    return f"Privacy Policy: {summary_data.get('summary', 'Key privacy terms')}"
+                elif summary_data['type'] == 'readme':
+                    return f"README: {summary_data['summary']}"
                 elif summary_data['type'] == 'changelog':
-                    return f"Version {summary_data['version']}: Key updates"
-                
-            # Fallback summary generation
-            return text[:200]
-        
+                    return f"Changelog v{summary_data['version']}: {summary_data['summary']}"
+                else:
+                    return f"Documentation: {summary_data['summary']}"
+            
+            else:
+                # General text file - use direct LLM summarization
+                general_prompt = "Summarize this content briefly: {text}"
+                return self.summarize_with_llm(text, general_prompt)
+            
         except Exception as e:
             print(f"Summary generation error for {file_path}: {e}")
-            return text[:200]  # Absolute fallback
+            return f"Summary unavailable for {os.path.basename(file_path)}: {str(e)}"
+
+def create_summarizer(use_large_model=False):
+    """Factory function to create a summarizer with appropriate model size"""
+    if use_large_model:
+        # Use a more capable model for better summaries (requires more resources)
+        return AdvancedSummarizer(model_name="google/flan-t5-base", max_length=200)
+    else:
+        # Use smaller model for efficiency
+        return AdvancedSummarizer(model_name="google/flan-t5-small", max_length=150)
 
 # Create a global instance
 advanced_summarizer = AdvancedSummarizer()
