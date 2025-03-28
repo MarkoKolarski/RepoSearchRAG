@@ -262,42 +262,78 @@ class AdvancedCodeRAGSystem:
         top_indices = probabilities.argsort()[-top_k:][::-1]
         return top_indices
 
-    def _diverse_retrieval(self, embeddings, query_embedding, top_k):
+    def _diverse_retrieval(
+        self, 
+        embeddings: np.ndarray, 
+        query_embedding: np.ndarray, 
+        file_paths: List[str], 
+        top_k: int = 10
+    ) -> List[int]:
         """
-        Diverse retrieval with MMR (Maximal Marginal Relevance).
+        Napredna diverse retrieval strategija sa više parametara.
         
         Args:
-            embeddings (np.ndarray): Document embeddings
-            query_embedding (np.ndarray): Query embedding
-            top_k (int): Number of top results to retrieve
+            embeddings (np.ndarray): Embeddings svih dokumenata
+            query_embedding (np.ndarray): Embedding upita
+            file_paths (List[str]): Putanje fajlova
+            top_k (int): Broj rezultata za vraćanje
         
         Returns:
-            List[int]: Indices of top-k documents
+            List[int]: Indeksi odabranih dokumenata
         """
-        similarities = np.dot(embeddings, query_embedding.T).flatten()
-        lambda_param = 0.5
+        # Parametri kontrole
+        lambda_relevance = 0.7  # Kontrola relevantnosti 
+        lambda_diversity = 0.3   # Kontrola diverziteta
         
+        # Bonus za ključne fajlove i putanje
+        def compute_path_bonus(file_paths: List[str]) -> np.ndarray:
+            """Izračunava bonus za putanje fajlova"""
+            bonus_keywords = [
+                'src', 'main', 'core', 'electron', 
+                'readme', 'composables', 'device'
+            ]
+            
+            path_bonus = np.array([
+                1.5 if any(key in path.lower() for key in bonus_keywords) 
+                else 1.0 
+                for path in file_paths
+            ])
+            
+            return path_bonus
+
+        # Izračunaj sličnosti i bonus
+        similarities = np.dot(embeddings, query_embedding.T).flatten()
+        path_bonus = compute_path_bonus(file_paths)
+        
+        # Primeni bonus na sličnosti
+        weighted_similarities = similarities * path_bonus
+        
+        # Implementacija naprednog MMR algoritma
         selected_indices = []
         candidates = list(range(len(embeddings)))
         
         while len(selected_indices) < top_k and candidates:
             if not selected_indices:
-                best_index = similarities.argmax()
+                # Prvi put - odaberi najpodobniji dokument
+                best_index = np.argmax(weighted_similarities)
             else:
-                # Compute diversity score
+                # Izračunaj score diverziteta
                 diversity_scores = [
-                    lambda_param * similarities[idx] - 
-                    (1 - lambda_param) * np.max([
+                    # Balansiranje između relevantnosti i diverziteta
+                    lambda_relevance * weighted_similarities[idx] - 
+                    lambda_diversity * np.max([
                         np.dot(embeddings[idx], embeddings[selected].T)
                         for selected in selected_indices
                     ])
                     for idx in candidates
                 ]
+                
+                # Odaberi indeks sa najboljim scoreom
                 best_index = candidates[np.argmax(diversity_scores)]
             
             selected_indices.append(best_index)
             candidates.remove(best_index)
-        
+    
         return selected_indices
 
     def generate_summary(self, text: str) -> str:
@@ -353,10 +389,15 @@ class AdvancedCodeRAGSystem:
         embeddings = self.embedding_model.encode(content_list)
         query_embedding = self.embedding_model.encode([clean_query])[0]
         
-        # Retrieval with selected strategy
-        top_indices = self.retrieval_strategy(
-            embeddings, query_embedding, top_k
-        )
+        # Pass file_paths to the retrieval strategy
+        if self.retrieval_strategy == self._diverse_retrieval:
+            top_indices = self.retrieval_strategy(
+                embeddings, query_embedding, file_paths, top_k
+            )
+        else:
+            top_indices = self.retrieval_strategy(
+                embeddings, query_embedding, top_k
+            )
         
         retrieved_contents = [content_list[idx] for idx in top_indices]
         retrieved_paths = [file_paths[idx] for idx in top_indices]
