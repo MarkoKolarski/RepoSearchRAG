@@ -2,13 +2,15 @@ import os
 import re
 import chardet
 import nltk
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from git import Repo
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
 from nltk.corpus import wordnet
 import numpy as np
 import faiss
+from listwise_reranker import ListwiseReranker
+
 
 # Ensure NLTK resources are downloaded
 nltk.download('punkt', quiet=True)
@@ -103,108 +105,187 @@ def prepare_repository_files(repo_path: str) -> Dict[str, str]:
     
     return file_contents
 
-class CodeRAGSystem:
+class AdvancedCodeRAGSystem:
     def __init__(
         self, 
-        embedding_model: str = 'all-MiniLM-L6-v2', 
+        embedding_model: Union[str, object] = 'all-MiniLM-L6-v2',
+        reranker_model: Optional[str] = None,
+        retrieval_strategy: str = 'default',
         summarization_model: str = "facebook/bart-large-cnn"
     ):
         """
-        Initialize CodeRAG system with embeddings and summarization.
+        Advanced CodeRAG system with flexible embedding and reranking.
         
         Args:
-            embedding_model (str): Sentence transformer model
-            summarization_model (str): Hugging Face summarization model
+            embedding_model (Union[str, object]): Embedding model or custom implementation
+            reranker_model (Optional[str]): Reranking model name
+            retrieval_strategy (str): Retrieval approach
         """
-        # Embedding model
-        self.embedding_model = SentenceTransformer(embedding_model)
-        
-        # Summarization pipeline
-        try:
-            self.summarizer = pipeline("summarization", model=summarization_model)
-        except Exception as e:
-            print(f"Summarization model load error: {e}")
-            self.summarizer = None
+        # Flexible embedding model loading
+        if isinstance(embedding_model, str):
+            self.embedding_model = SentenceTransformer(embedding_model)
+        else:
+            self.embedding_model = embedding_model
 
-        # FAISS index
-        self.faiss_index = None
-        self.file_paths = []
+        # Initialize reranker
+        self.reranker = ListwiseReranker(
+            model_name=reranker_model or "cross-encoder/ms-marco-MiniLM-L-12-v2"
+        )
 
-    def create_embeddings(self, file_contents: Dict[str, str]):
+        # Configurable retrieval strategy
+        self.retrieval_strategy = self._get_retrieval_strategy(retrieval_strategy)
+
+        self.summarizer = pipeline(
+            "summarization", 
+            model=summarization_model,
+            max_length=150,
+            min_length=30,
+            do_sample=False
+        )
+
+    def generate_summary(self, file_content: str, max_tokens: int = 300) -> str:
         """
-        Create embeddings for repository files.
+        Generate concise, context-aware summary with dynamic length adjustment.
         
         Args:
-            file_contents (Dict[str, str]): Dictionary of file paths and contents
-        """
-        contents = list(file_contents.values())
-        self.file_paths = list(file_contents.keys())
-        
-        embeddings = self.embedding_model.encode(contents)
-        dimension = embeddings.shape[1]
-        
-        # L2 distance index
-        self.faiss_index = faiss.IndexFlatL2(dimension)
-        self.faiss_index.add(embeddings)
-
-    def retrieve_files(self, query: str, top_k: int = 10) -> List[str]:
-        """
-        Retrieve most relevant files for a query.
-        
-        Args:
-            query (str): Search query
-            top_k (int): Number of top results to return
+            file_content (str): Full file content
+            max_tokens (int): Maximum tokens for summary
         
         Returns:
-            List[str]: List of relevant file paths
+            str: Generated summary
         """
-        if self.faiss_index is None:
-            raise ValueError("Embeddings not created. Call create_embeddings first.")
+        # Truncate extremely long content
+        content = file_content[:max_tokens * 4]  # Rough token estimation
         
-        query_embedding = self.embedding_model.encode([query])
-        distances, indices = self.faiss_index.search(query_embedding, top_k)
-        
-        return [self.file_paths[i] for i in indices[0]]
-
-    def generate_summary(self, file_content: str, max_length: int = 150) -> str:
-        """
-        Generate summary for a file content with dynamic length adjustment.
-        
-        Args:
-            file_content (str): File content to summarize
-            max_length (int): Maximum summary length
-        
-        Returns:
-            str: Summarized content
-        """
-        if not self.summarizer:
-            return "Summarization unavailable"
-
-        # Trim extremely long inputs
-        if len(file_content) > 1000:
-            file_content = file_content[:1000]
-
         try:
-            # Dynamically adjust max_length
-            adjusted_max_length = min(
-                max_length, 
-                max(30, int(len(file_content) * 0.3))  # Use 30% of input length, minimum 30
+            # Very short content - return as-is
+            if len(content) < 100:
+                return content
+            
+            # Dynamically calculate summary length
+            input_length = len(content)
+            summary_length = min(
+                max(30, int(input_length * 0.3)),  # 30% of input, but at least 30 tokens
+                150  # Cap at 150 tokens
             )
             
-            # Ensure min_length is less than max_length
-            adjusted_min_length = max(10, int(adjusted_max_length * 0.5))
-
-            summary = self.summarizer(
-                file_content, 
-                max_length=adjusted_max_length, 
-                min_length=adjusted_min_length, 
+            # Minimum length should be less than max_length
+            min_length = max(10, int(summary_length * 0.5))
+            
+            # Ensure we don't exceed model's input constraints
+            summaries = self.summarizer(
+                content, 
+                max_length=summary_length, 
+                min_length=min_length, 
                 do_sample=False
             )
             
-            return summary[0]['summary_text'] if summary else "Unable to generate summary"
+            return summaries[0]['summary_text'] if summaries else content[:300] + "..."
+        
         except Exception as e:
             print(f"Summary generation error: {e}")
-            return "Unable to generate summary"
+            return content[:300] + "..."  # Fallback to truncated content
+
+    def _get_retrieval_strategy(self, strategy: str):
+        """
+        Select retrieval strategy dynamically.
+        
+        Args:
+            strategy (str): Retrieval strategy name
+        
+        Returns:
+            Callable retrieval function
+        """
+        strategies = {
+            'default': self._default_retrieval,
+            'probabilistic': self._probabilistic_retrieval,
+            'diverse': self._diverse_retrieval
+        }
+        return strategies.get(strategy, self._default_retrieval)
+
+    def _default_retrieval(self, embeddings, query_embedding, top_k):
+        """Default cosine similarity retrieval."""
+        similarities = np.dot(embeddings, query_embedding.T).flatten()
+        top_indices = similarities.argsort()[-top_k:][::-1]
+        return top_indices
+
+    def _probabilistic_retrieval(self, embeddings, query_embedding, top_k):
+        """Probabilistic relevance retrieval."""
+        similarities = np.dot(embeddings, query_embedding.T).flatten()
+        probabilities = np.exp(similarities) / np.sum(np.exp(similarities))
+        top_indices = probabilities.argsort()[-top_k:][::-1]
+        return top_indices
+
+    def _diverse_retrieval(self, embeddings, query_embedding, top_k):
+        """Diverse retrieval with MMR (Maximal Marginal Relevance)."""
+        similarities = np.dot(embeddings, query_embedding.T).flatten()
+        lambda_param = 0.5
+        
+        selected_indices = []
+        candidates = list(range(len(embeddings)))
+        
+        while len(selected_indices) < top_k and candidates:
+            if not selected_indices:
+                best_index = similarities.argmax()
+            else:
+                # Compute diversity score
+                diversity_scores = [
+                    lambda_param * similarities[idx] - 
+                    (1 - lambda_param) * np.max([
+                        np.dot(embeddings[idx], embeddings[selected].T)
+                        for selected in selected_indices
+                    ])
+                    for idx in candidates
+                ]
+                best_index = candidates[np.argmax(diversity_scores)]
+            
+            selected_indices.append(best_index)
+            candidates.remove(best_index)
+        
+        return selected_indices
+
+    def advanced_retrieve(
+        self, 
+        query: str, 
+        file_contents: Dict[str, str], 
+        top_k: int = 10
+    ) -> List[str]:
+        """
+        Advanced retrieval with embedding, reranking, and diverse strategies.
+        
+        Args:
+            query (str): Search query
+            file_contents (Dict[str, str]): File contents
+            top_k (int): Number of top results
+        
+        Returns:
+            List[str]: Retrieved file paths
+        """
+        # Embedding
+        content_list = list(file_contents.values())
+        file_paths = list(file_contents.keys())
+        
+        embeddings = self.embedding_model.encode(content_list)
+        query_embedding = self.embedding_model.encode([query])[0]
+        
+        # Retrieval
+        top_indices = self.retrieval_strategy(
+            embeddings, query_embedding, top_k
+        )
+        
+        retrieved_contents = [content_list[idx] for idx in top_indices]
+        retrieved_paths = [file_paths[idx] for idx in top_indices]
+        
+        # Reranking
+        reranked_contents = self.reranker.rerank(query, retrieved_contents, top_k)
+        
+        # Match reranked contents back to paths
+        reranked_paths = [
+            path for content, path in zip(retrieved_contents, retrieved_paths)
+            if content in reranked_contents
+        ]
+        
+        return reranked_paths
 
 class QueryExpander:
     def __init__(self):
