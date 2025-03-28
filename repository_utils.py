@@ -1,24 +1,25 @@
 import os
 import re
-import chardet
-import nltk
+import functools
+import time
 from typing import Dict, List, Optional, Union
-from git import Repo
+
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
-from nltk.corpus import wordnet
-import numpy as np
-import faiss
-from listwise_reranker import ListwiseReranker
+import nltk
 
+from listwise_reranker import ListwiseReranker
 
 # Ensure NLTK resources are downloaded
 nltk.download('punkt', quiet=True)
 nltk.download('wordnet', quiet=True)
 
+from tqdm import tqdm  # Added for progress tracking
+
 def clone_repository(url: str, dest_folder: str) -> Optional[str]:
     """
-    Clone a GitHub repository to a local directory.
+    Clone a GitHub repository to a local directory with progress indication.
     
     Args:
         url (str): GitHub repository URL
@@ -73,7 +74,7 @@ def read_file_with_encoding(file_path: str) -> Optional[str]:
 
 def prepare_repository_files(repo_path: str) -> Dict[str, str]:
     """
-    Collect and read files from repository.
+    Collect and read files from repository using multiprocessing.
     
     Args:
         repo_path (str): Path to repository
@@ -95,15 +96,72 @@ def prepare_repository_files(repo_path: str) -> Dict[str, str]:
         
         return file_paths
 
+    # Collect files
     files = collect_files(repo_path)
     
-    file_contents = {}
-    for file_path in files:
-        content = read_file_with_encoding(file_path)
-        if content:
-            file_contents[file_path] = content
+    # Use multiprocessing to read files
+    with multiprocessing.Pool(processes=max(1, multiprocessing.cpu_count() - 1)) as pool:
+        # Use tqdm for progress tracking
+        file_contents = {}
+        with tqdm(total=len(files), desc="Reading Repository Files", unit="file") as pbar:
+            def update_pbar(result):
+                pbar.update(1)
+                return result
+
+            results = []
+            for file_path in files:
+                # Add result to list, update progress bar
+                result = pool.apply_async(
+                    read_file_with_encoding, 
+                    args=(file_path,), 
+                    callback=update_pbar
+                )
+                results.append((file_path, result))
+            
+            # Collect results
+            for file_path, result in results:
+                content = result.get()  # Wait for result
+                if content:
+                    file_contents[file_path] = content
     
     return file_contents
+
+class LRUCache:
+    """Simple LRU Cache for embeddings"""
+    def __init__(self, capacity=100):
+        self.cache = {}
+        self.capacity = capacity
+
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        self.cache[key] = self.cache.pop(key)
+        return self.cache[key]
+
+    def put(self, key, value):
+        if key in self.cache:
+            del self.cache[key]
+        elif len(self.cache) >= self.capacity:
+            self.cache.pop(next(iter(self.cache)))
+        self.cache[key] = value
+
+import os
+import re
+import chardet
+import nltk
+from typing import Dict, List, Optional, Union
+from git import Repo
+from sentence_transformers import SentenceTransformer
+from transformers import pipeline
+from nltk.corpus import wordnet
+import numpy as np
+import faiss
+from listwise_reranker import ListwiseReranker
+import functools
+import multiprocessing
+
+nltk.download('punkt', quiet=True)
+nltk.download('wordnet', quiet=True)
 
 class AdvancedCodeRAGSystem:
     def __init__(
@@ -114,110 +172,121 @@ class AdvancedCodeRAGSystem:
         summarization_model: str = "facebook/bart-large-cnn"
     ):
         """
-        Advanced CodeRAG system with flexible embedding and reranking.
+        Initialize Advanced Code Retrieval and Generation System.
         
         Args:
-            embedding_model (Union[str, object]): Embedding model or custom implementation
-            reranker_model (Optional[str]): Reranking model name
-            retrieval_strategy (str): Retrieval approach
+            embedding_model (str/object): Sentence embedding model
+            reranker_model (str, optional): Cross-encoder reranking model
+            retrieval_strategy (str): Strategy for document retrieval
+            summarization_model (str): Model for text summarization
         """
-        # Flexible embedding model loading
-        if isinstance(embedding_model, str):
-            self.embedding_model = SentenceTransformer(embedding_model)
-        else:
-            self.embedding_model = embedding_model
+        # Lazy loading configuration
+        self._embedding_model_name = embedding_model
+        self._reranker_model_name = reranker_model or "cross-encoder/ms-marco-MiniLM-L-12-v2"
+        self._summarization_model = summarization_model
+        
+        # Placeholders for models
+        self._embedding_model = None
+        self._reranker = None
+        self._summarizer = None
 
-        # Initialize reranker
-        self.reranker = ListwiseReranker(
-            model_name=reranker_model or "cross-encoder/ms-marco-MiniLM-L-12-v2"
-        )
-
-        # Configurable retrieval strategy
-        self.retrieval_strategy = self._get_retrieval_strategy(retrieval_strategy)
-
-        self.summarizer = pipeline(
-            "summarization", 
-            model=summarization_model,
-            max_length=150,
-            min_length=30,
-            do_sample=False
-        )
-
-    def generate_summary(self, file_content: str, max_tokens: int = 300) -> str:
-        """
-        Generate concise, context-aware summary with dynamic length adjustment.
-        
-        Args:
-            file_content (str): Full file content
-            max_tokens (int): Maximum tokens for summary
-        
-        Returns:
-            str: Generated summary
-        """
-        # Truncate extremely long content
-        content = file_content[:max_tokens * 4]  # Rough token estimation
-        
-        try:
-            # Very short content - return as-is
-            if len(content) < 100:
-                return content
-            
-            # Dynamically calculate summary length
-            input_length = len(content)
-            summary_length = min(
-                max(30, int(input_length * 0.3)),  # 30% of input, but at least 30 tokens
-                150  # Cap at 150 tokens
-            )
-            
-            # Minimum length should be less than max_length
-            min_length = max(10, int(summary_length * 0.5))
-            
-            # Ensure we don't exceed model's input constraints
-            summaries = self.summarizer(
-                content, 
-                max_length=summary_length, 
-                min_length=min_length, 
-                do_sample=False
-            )
-            
-            return summaries[0]['summary_text'] if summaries else content[:300] + "..."
-        
-        except Exception as e:
-            print(f"Summary generation error: {e}")
-            return content[:300] + "..."  # Fallback to truncated content
-
-    def _get_retrieval_strategy(self, strategy: str):
-        """
-        Select retrieval strategy dynamically.
-        
-        Args:
-            strategy (str): Retrieval strategy name
-        
-        Returns:
-            Callable retrieval function
-        """
-        strategies = {
+        # Retrieval strategies with fallback to default
+        retrieval_strategies = {
             'default': self._default_retrieval,
             'probabilistic': self._probabilistic_retrieval,
             'diverse': self._diverse_retrieval
         }
-        return strategies.get(strategy, self._default_retrieval)
+        self.retrieval_strategy = retrieval_strategies.get(
+            retrieval_strategy, 
+            retrieval_strategies['default']
+        )
+
+    @functools.cached_property
+    def embedding_model(self):
+        """Lazy load embedding model"""
+        if self._embedding_model is None:
+            print("Loading embedding model...", end=' ', flush=True)
+            start_time = time.time()
+            self._embedding_model = SentenceTransformer(
+                self._embedding_model_name,
+                device='cpu'
+            )
+            print(f"Done (took {time.time() - start_time:.2f} seconds)")
+        return self._embedding_model
+
+    @functools.cached_property
+    def reranker(self):
+        """Lazy load reranker"""
+        if self._reranker is None:
+            print("Loading reranker...", end=' ', flush=True)
+            start_time = time.time()
+            self._reranker = ListwiseReranker(
+                model_name=self._reranker_model_name
+            )
+            print(f"Done (took {time.time() - start_time:.2f} seconds)")
+        return self._reranker
+
+    @functools.cached_property
+    def summarizer(self):
+        """Lazy load summarization pipeline"""
+        if self._summarizer is None:
+            print("Loading summarization model...", end=' ', flush=True)
+            start_time = time.time()
+            self._summarizer = pipeline(
+                "summarization", 
+                model=self._summarization_model,
+                max_length=150,
+                min_length=30,
+                do_sample=False
+            )
+            print(f"Done (took {time.time() - start_time:.2f} seconds)")
+        return self._summarizer
 
     def _default_retrieval(self, embeddings, query_embedding, top_k):
-        """Default cosine similarity retrieval."""
+        """
+        Default cosine similarity retrieval.
+        
+        Args:
+            embeddings (np.ndarray): Document embeddings
+            query_embedding (np.ndarray): Query embedding
+            top_k (int): Number of top results to retrieve
+        
+        Returns:
+            List[int]: Indices of top-k documents
+        """
         similarities = np.dot(embeddings, query_embedding.T).flatten()
         top_indices = similarities.argsort()[-top_k:][::-1]
         return top_indices
 
     def _probabilistic_retrieval(self, embeddings, query_embedding, top_k):
-        """Probabilistic relevance retrieval."""
+        """
+        Probabilistic relevance retrieval.
+        
+        Args:
+            embeddings (np.ndarray): Document embeddings
+            query_embedding (np.ndarray): Query embedding
+            top_k (int): Number of top results to retrieve
+        
+        Returns:
+            List[int]: Indices of top-k documents
+        """
         similarities = np.dot(embeddings, query_embedding.T).flatten()
         probabilities = np.exp(similarities) / np.sum(np.exp(similarities))
         top_indices = probabilities.argsort()[-top_k:][::-1]
         return top_indices
 
     def _diverse_retrieval(self, embeddings, query_embedding, top_k):
-        """Diverse retrieval with MMR (Maximal Marginal Relevance)."""
+        """
+        Diverse retrieval with MMR (Maximal Marginal Relevance).
+        
+        Args:
+            embeddings (np.ndarray): Document embeddings
+            query_embedding (np.ndarray): Query embedding
+            top_k (int): Number of top results to retrieve
+        
+        Returns:
+            List[int]: Indices of top-k documents
+        """
         similarities = np.dot(embeddings, query_embedding.T).flatten()
         lambda_param = 0.5
         
@@ -244,6 +313,28 @@ class AdvancedCodeRAGSystem:
         
         return selected_indices
 
+    def generate_summary(self, text: str) -> str:
+        """
+        Generate a concise summary of given text.
+        
+        Args:
+            text (str): Input text to summarize
+        
+        Returns:
+            str: Summarized text
+        """
+        # Truncate very long texts to avoid overwhelming the summarizer
+        max_text_length = 1024
+        if len(text) > max_text_length:
+            text = text[:max_text_length]
+        
+        try:
+            summaries = self.summarizer(text)
+            return summaries[0]['summary_text'] if summaries else text[:200]
+        except Exception as e:
+            print(f"Summarization error: {e}")
+            return text[:200]  # Fallback to first 200 characters
+
     def advanced_retrieve(
         self, 
         query: str, 
@@ -251,24 +342,31 @@ class AdvancedCodeRAGSystem:
         top_k: int = 10
     ) -> List[str]:
         """
-        Advanced retrieval with embedding, reranking, and diverse strategies.
+        Enhanced retrieval with context-aware techniques
         
         Args:
             query (str): Search query
-            file_contents (Dict[str, str]): File contents
-            top_k (int): Number of top results
+            file_contents (Dict[str, str]): Dictionary of file paths and contents
+            top_k (int): Number of top results to retrieve
         
         Returns:
-            List[str]: Retrieved file paths
+            List[str]: Paths of retrieved files
         """
-        # Embedding
-        content_list = list(file_contents.values())
+        # Preprocess query: remove special characters, lowercase
+        clean_query = re.sub(r'[^a-zA-Z0-9\s]', '', query).lower()
+        
+        # Embed contents with more context
+        content_list = [
+            f"File Path: {path}\nContent Context: {content[:500]}"
+            for path, content in file_contents.items()
+        ]
         file_paths = list(file_contents.keys())
         
+        # Use embedding model for semantic understanding
         embeddings = self.embedding_model.encode(content_list)
-        query_embedding = self.embedding_model.encode([query])[0]
+        query_embedding = self.embedding_model.encode([clean_query])[0]
         
-        # Retrieval
+        # Retrieval with selected strategy
         top_indices = self.retrieval_strategy(
             embeddings, query_embedding, top_k
         )
@@ -276,8 +374,8 @@ class AdvancedCodeRAGSystem:
         retrieved_contents = [content_list[idx] for idx in top_indices]
         retrieved_paths = [file_paths[idx] for idx in top_indices]
         
-        # Reranking
-        reranked_contents = self.reranker.rerank(query, retrieved_contents, top_k)
+        # Advanced reranking
+        reranked_contents = self.reranker.rerank(clean_query, retrieved_contents, top_k)
         
         # Match reranked contents back to paths
         reranked_paths = [
@@ -289,66 +387,44 @@ class AdvancedCodeRAGSystem:
 
 class QueryExpander:
     def __init__(self):
-        """
-        Initialize query expander with NLTK resources.
-        """
         nltk.download('punkt', quiet=True)
         nltk.download('wordnet', quiet=True)
 
-    def expand_query(self, query: str, context_words: Optional[List[str]] = None) -> List[str]:
+    def expand_query(self, query: str) -> List[str]:
         """
-        Expand query with synonyms and context.
-        
-        Args:
-            query (str): Original query
-            context_words (Optional[List[str]]): Additional context words
-        
-        Returns:
-            List[str]: List of expanded queries
+        Enhanced query expansion with domain-specific techniques
         """
         try:
+            # Tokenize and clean query
             tokens = nltk.word_tokenize(query.lower())
+            tokens = [re.sub(r'[^a-z0-9]', '', token) for token in tokens]
             
-            # Get synonyms
-            expanded_tokens = tokens + [
-                syn for token in tokens 
-                for syn in self._get_synonyms(token)[:2]
-            ]
+            # Code-specific query expansion
+            code_context_mappings = {
+                'screen': ['recording', 'capture', 'display'],
+                'device': ['connection', 'adb', 'android'],
+                'android': ['mobile', 'smartphone', 'screen'],
+            }
             
-            # Add context words
-            if context_words:
-                expanded_tokens.extend(context_words)
+            # Expand with domain-specific context
+            expanded_tokens = tokens.copy()
+            for token in tokens:
+                expanded_tokens.extend(
+                    code_context_mappings.get(token, [])
+                )
             
-            # Generate query variations
+            # Generate multiple query variations
             variations = [
                 ' '.join(expanded_tokens),
                 query.lower(),
-                ' '.join(reversed(tokens))
+                ' '.join(reversed(tokens)),
+                ' '.join(set(expanded_tokens))  # Remove duplicates
             ]
             
             return list(set(variations))
         except Exception as e:
             print(f"Query expansion error: {e}")
             return [query.lower()]
-
-    def _get_synonyms(self, word: str) -> List[str]:
-        """
-        Get synonyms for a word.
-        
-        Args:
-            word (str): Word to find synonyms for
-        
-        Returns:
-            List[str]: List of synonyms
-        """
-        synonyms = set()
-        try:
-            for syn in wordnet.synsets(word):
-                for lemma in syn.lemmas():
-                    synonyms.add(lemma.name().replace('_', ' '))
-        except Exception as e:
-            print(f"Synonym retrieval error for {word}: {e}")
-        return list(synonyms)
 
 class RAGEvaluator:
     def __init__(self, ground_truth: Dict[str, List[str]]):
