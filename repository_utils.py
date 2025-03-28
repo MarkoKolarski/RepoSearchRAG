@@ -520,8 +520,8 @@ class AdvancedCodeRAGSystem:
             'default': self._default_retrieval,
             'probabilistic': self._probabilistic_retrieval,
             'diverse': self._diverse_retrieval,
-            'advanced': self._diverse_retrieval
         }
+        
         self.retrieval_strategy = retrieval_strategies.get(
             retrieval_strategy, 
             retrieval_strategies['default']

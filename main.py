@@ -36,7 +36,7 @@ def parse_args():
         "--retrieval_strategy", 
         type=str, 
         default="diverse", 
-        choices=["default", "probabilistic", "diverse", "advanced"],
+        choices=["default", "probabilistic", "diverse"],
         help="Retrieval strategy"
     )
     parser.add_argument(
