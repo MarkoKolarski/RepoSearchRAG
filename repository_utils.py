@@ -2,7 +2,7 @@ import os
 import re
 import functools
 import time
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from transformers import pipeline
@@ -13,6 +13,7 @@ from transformers import pipeline
 import numpy as np
 from listwise_reranker import ListwiseReranker
 import multiprocessing
+
 
 
 # Ensure NLTK resources are downloaded
@@ -150,13 +151,184 @@ class LRUCache:
         self.cache[key] = value
 
 
+class AdvancedSummarizer:
+    def __init__(self):
+        # Download necessary NLTK resources
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        
+        # Predefined context mappings
+        self.context_keywords = {
+            'device': ['connection', 'status', 'adb', 'scanner', 'pairing'],
+            'ui': ['store', 'plugin', 'component', 'dialog', 'preference'],
+            'utils': ['helper', 'generator', 'action', 'message'],
+            'system': ['auto', 'import', 'configuration']
+        }
+
+    def extract_module_context(self, file_path: str) -> str:
+        """
+        Extract contextual information from file path.
+        
+        Args:
+            file_path (str): Path to the file
+        
+        Returns:
+            str: Contextual module type
+        """
+        path_parts = file_path.lower().split(os.path.sep)
+        
+        for category, keywords in self.context_keywords.items():
+            if any(keyword in part for part in path_parts for keyword in keywords):
+                return category
+        
+        return 'general'
+
+    def summarize_code_file(self, text: str, file_path: str) -> Dict[str, Any]:
+        """
+        Advanced code file summarization.
+        
+        Args:
+            text (str): File content
+            file_path (str): File path
+        
+        Returns:
+            Dict with summary components
+        """
+        # Regex patterns for extracting key information
+        import_pattern = r'import\s+(?:(\w+)\s+from\s+[\'"](.+)[\'"]|{([^}]+)})'
+        export_pattern = r'export\s+(?:default\s+)?(?:const|function|class)\s+(\w+)'
+        
+        # Extract imports
+        imports = re.findall(import_pattern, text)
+        imports = [
+            imp[0] or imp[1] or imp[2].strip() 
+            for imp in imports if any(imp)
+        ]
+        
+        # Extract exports
+        exports = re.findall(export_pattern, text)
+        
+        # Module context
+        module_context = self.extract_module_context(file_path)
+        
+        return {
+            'module_type': module_context,
+            'imports': imports[:3],  # Limit to top 3
+            'exports': exports[:3],  # Limit to top 3
+        }
+
+    def summarize_text_file(self, text: str, file_path: str) -> Dict[str, Any]:
+        """
+        Advanced text file summarization.
+        
+        Args:
+            text (str): File content
+            file_path (str): File path
+        
+        Returns:
+            Dict with summary components
+        """
+        filename = os.path.basename(file_path).lower()
+        
+        # Specific strategies for different file types
+        if 'license' in filename or 'notice' in filename:
+            # Extract license information
+            license_match = re.search(r'(Apache|MIT|BSD|GPL)\s+(?:License)?\s*(\d+\.\d+)', text, re.IGNORECASE)
+            if license_match:
+                return {
+                    'type': 'license',
+                    'details': f"{license_match.group(1)} {license_match.group(2)}"
+                }
+        
+        elif 'privacy' in filename:
+            # Extract key privacy statements
+            privacy_keywords = ['collect', 'store', 'transmit', 'data', 'information']
+            privacy_summary = ' '.join([
+                word for word in text.lower().split() 
+                if word in privacy_keywords
+            ][:10])
+            
+            return {
+                'type': 'privacy_policy',
+                'summary': privacy_summary
+            }
+        
+        elif 'changelog' in filename:
+            # Extract version and key updates
+            version_match = re.search(r'(\d+\.\d+\.\d+)', text)
+            version = version_match.group(1) if version_match else 'Latest'
+            
+            return {
+                'type': 'changelog',
+                'version': version
+            }
+        
+        # Fallback for generic text files
+        return {
+            'type': 'text',
+            'summary': text[:200]
+        }
+
+    def generate_summary(self, text: str, file_path: str) -> str:
+        """
+        Comprehensive summary generation.
+        
+        Args:
+            text (str): File content
+            file_path (str): File path
+        
+        Returns:
+            str: Generated summary
+        """
+        # Truncate very long texts
+        text = text[:2048]
+        
+        try:
+            # Determine file type based on content and path
+            if any(keyword in text.lower() for keyword in ['import', 'export', 'const', 'function']):
+                # Code file
+                summary_data = self.summarize_code_file(text, file_path)
+                
+                # Construct summary string
+                if summary_data['imports'] or summary_data['exports']:
+                    summary_parts = []
+                    if summary_data['imports']:
+                        summary_parts.append(f"Imports: {', '.join(summary_data['imports'])}")
+                    if summary_data['exports']:
+                        summary_parts.append(f"Exports: {', '.join(summary_data['exports'])}")
+                    
+                    return f"{summary_data['module_type'].capitalize()} Module | {' | '.join(summary_parts)}"
+                
+            elif any(keyword in file_path.lower() for keyword in ['license', 'notice', 'privacy', 'changelog']):
+                # Text documentation
+                summary_data = self.summarize_text_file(text, file_path)
+                
+                if summary_data['type'] == 'license':
+                    return f"License: {summary_data['details']}"
+                elif summary_data['type'] == 'privacy_policy':
+                    return f"Privacy Policy: {summary_data.get('summary', 'Key privacy terms')}"
+                elif summary_data['type'] == 'changelog':
+                    return f"Version {summary_data['version']}: Key updates"
+                
+            # Fallback summary generation
+            return text[:200]
+        
+        except Exception as e:
+            print(f"Summary generation error for {file_path}: {e}")
+            return text[:200]  # Absolute fallback
+
+# Create a global instance
+advanced_summarizer = AdvancedSummarizer()
+
+
 class AdvancedCodeRAGSystem:
     def __init__(
         self, 
         embedding_model: Union[str, object] = 'all-MiniLM-L6-v2',
         reranker_model: Optional[str] = None,
         retrieval_strategy: str = 'default',
-        summarization_model: str = "facebook/bart-large-cnn"
+        summarization_model: str = "google/pegasus-xsum",
+        
     ):
         """
         Initialize Advanced Code Retrieval and Generation System.
@@ -222,9 +394,13 @@ class AdvancedCodeRAGSystem:
             self._summarizer = pipeline(
                 "summarization", 
                 model=self._summarization_model,
-                max_length=150,
-                min_length=30,
-                do_sample=False
+                max_length=80,  
+                min_length=20,   
+                do_sample=False,  
+                temperature=1.0,  
+                num_beams=6,  
+                no_repeat_ngram_size=3  
+
             )
             print(f"Done (took {time.time() - start_time:.2f} seconds)")
         return self._summarizer
@@ -336,27 +512,8 @@ class AdvancedCodeRAGSystem:
     
         return selected_indices
 
-    def generate_summary(self, text: str) -> str:
-        """
-        Generate a concise summary of given text.
-        
-        Args:
-            text (str): Input text to summarize
-        
-        Returns:
-            str: Summarized text
-        """
-        # Truncate very long texts to avoid overwhelming the summarizer
-        max_text_length = 1024
-        if len(text) > max_text_length:
-            text = text[:max_text_length]
-        
-        try:
-            summaries = self.summarizer(text)
-            return summaries[0]['summary_text'] if summaries else text[:200]
-        except Exception as e:
-            print(f"Summarization error: {e}")
-            return text[:200]  # Fallback to first 200 characters
+    def generate_summary(self, text: str, file_path: str = '') -> str:
+        return advanced_summarizer.generate_summary(text, file_path)
 
     def advanced_retrieve(
         self, 
@@ -412,6 +569,7 @@ class AdvancedCodeRAGSystem:
         ]
         
         return reranked_paths
+
 
 class QueryExpander:
     def __init__(self):
