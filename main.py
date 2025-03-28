@@ -5,7 +5,7 @@ from repository_utils import (
     prepare_repository_files, 
     AdvancedCodeRAGSystem,
     QueryExpander,
-    RAGEvaluator
+    RAGEvaluator,
 )
 import os
 
@@ -128,7 +128,7 @@ def main():
                 
                 # Generate summary only if flag is set
                 if args.generate_summaries:
-                    summary = rag_system.generate_summary(content)
+                    summary = rag_system.summarizer.generate_summary(content, result)
                     print(f"Summary: {summary}\n")
                 else:
                     print()  # Just a newline for consistent formatting

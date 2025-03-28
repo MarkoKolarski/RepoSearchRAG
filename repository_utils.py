@@ -5,12 +5,9 @@ import time
 from typing import Dict, List, Optional, Union, Any
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from transformers import pipeline
 import nltk
 import chardet
 from git import Repo
-from transformers import pipeline
-import numpy as np
 from listwise_reranker import ListwiseReranker
 import multiprocessing
 
@@ -327,7 +324,8 @@ class AdvancedCodeRAGSystem:
         embedding_model: Union[str, object] = 'all-MiniLM-L6-v2',
         reranker_model: Optional[str] = None,
         retrieval_strategy: str = 'default',
-        summarization_model: str = "google/pegasus-xsum",
+        summarizer: Optional[AdvancedSummarizer] = None
+
         
     ):
         """
@@ -342,12 +340,11 @@ class AdvancedCodeRAGSystem:
         # Lazy loading configuration
         self._embedding_model_name = embedding_model
         self._reranker_model_name = reranker_model or "cross-encoder/ms-marco-MiniLM-L-12-v2"
-        self._summarization_model = summarization_model
+        self.summarizer = summarizer or AdvancedSummarizer()
         
         # Placeholders for models
         self._embedding_model = None
         self._reranker = None
-        self._summarizer = None
 
         # Retrieval strategies with fallback to default
         retrieval_strategies = {
@@ -384,26 +381,6 @@ class AdvancedCodeRAGSystem:
             )
             print(f"Done (took {time.time() - start_time:.2f} seconds)")
         return self._reranker
-
-    @functools.cached_property
-    def summarizer(self):
-        """Lazy load summarization pipeline"""
-        if self._summarizer is None:
-            print("Loading summarization model...", end=' ', flush=True)
-            start_time = time.time()
-            self._summarizer = pipeline(
-                "summarization", 
-                model=self._summarization_model,
-                max_length=80,  
-                min_length=20,   
-                do_sample=False,  
-                temperature=1.0,  
-                num_beams=6,  
-                no_repeat_ngram_size=3  
-
-            )
-            print(f"Done (took {time.time() - start_time:.2f} seconds)")
-        return self._summarizer
 
     def _default_retrieval(self, embeddings, query_embedding, top_k):
         """
@@ -511,9 +488,6 @@ class AdvancedCodeRAGSystem:
             candidates.remove(best_index)
     
         return selected_indices
-
-    def generate_summary(self, text: str, file_path: str = '') -> str:
-        return advanced_summarizer.generate_summary(text, file_path)
 
     def advanced_retrieve(
         self, 
