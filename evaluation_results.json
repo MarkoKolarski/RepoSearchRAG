@@ -1,0 +1,101 @@
+{
+  "default": {
+    "recall": 0.8772702943560057,
+    "precision": 0.25,
+    "f1_score": 0.3891126639051455,
+    "avg_query_time": 8.670573711395264,
+    "total_time": 18.86736226081848,
+    "retrieved_files": {
+      "android screen recording": [
+        "src\\store\\preference\\model\\index.js",
+        "src\\composables\\useScreenshotAction\\index.js",
+        "electron\\resources\\extra\\linux\\android-platform-tools\\NOTICE.txt",
+        "src\\composables\\index.js",
+        "src\\store\\preference\\model\\device\\index.js",
+        "electron\\resources\\extra\\win\\android-platform-tools\\NOTICE.txt",
+        "electron\\resources\\extra\\mac\\android-platform-tools\\NOTICE.txt",
+        "develop.md",
+        "CHANGELOG.md",
+        "src\\plugins\\vue-screen\\index.js"
+      ],
+      "device connection": [
+        "src\\dicts\\device\\index.js",
+        "src\\utils\\device\\generateAdbPairingQR\\index.js",
+        "electron\\exposes\\adb\\helpers\\scanner\\index.js",
+        "src\\components\\PreferenceForm\\components\\helper.js",
+        "src\\store\\device\\helpers\\index.js",
+        "src\\store\\index.js",
+        "electron\\resources\\extra\\mac\\android-platform-tools\\NOTICE.txt",
+        "electron\\resources\\extra\\linux\\android-platform-tools\\NOTICE.txt",
+        "src\\utils\\device\\index.js",
+        "electron\\resources\\extra\\win\\android-platform-tools\\NOTICE.txt"
+      ]
+    }
+  },
+  "probabilistic": {
+    "recall": 0.8772702943560057,
+    "precision": 0.25,
+    "f1_score": 0.3891126639051455,
+    "avg_query_time": 8.540258169174194,
+    "total_time": 18.58981990814209,
+    "retrieved_files": {
+      "android screen recording": [
+        "src\\store\\preference\\model\\index.js",
+        "src\\composables\\useScreenshotAction\\index.js",
+        "electron\\resources\\extra\\linux\\android-platform-tools\\NOTICE.txt",
+        "src\\composables\\index.js",
+        "src\\store\\preference\\model\\device\\index.js",
+        "electron\\resources\\extra\\win\\android-platform-tools\\NOTICE.txt",
+        "electron\\resources\\extra\\mac\\android-platform-tools\\NOTICE.txt",
+        "develop.md",
+        "CHANGELOG.md",
+        "src\\plugins\\vue-screen\\index.js"
+      ],
+      "device connection": [
+        "src\\dicts\\device\\index.js",
+        "src\\utils\\device\\generateAdbPairingQR\\index.js",
+        "electron\\exposes\\adb\\helpers\\scanner\\index.js",
+        "src\\components\\PreferenceForm\\components\\helper.js",
+        "src\\store\\device\\helpers\\index.js",
+        "src\\store\\index.js",
+        "electron\\resources\\extra\\mac\\android-platform-tools\\NOTICE.txt",
+        "electron\\resources\\extra\\linux\\android-platform-tools\\NOTICE.txt",
+        "src\\utils\\device\\index.js",
+        "electron\\resources\\extra\\win\\android-platform-tools\\NOTICE.txt"
+      ]
+    }
+  },
+  "diverse": {
+    "recall": 0.8772702943560057,
+    "precision": 0.25,
+    "f1_score": 0.3891126639051455,
+    "avg_query_time": 8.763975620269775,
+    "total_time": 19.024943828582764,
+    "retrieved_files": {
+      "android screen recording": [
+        "src\\store\\preference\\model\\index.js",
+        "electron\\resources\\extra\\linux\\android-platform-tools\\NOTICE.txt",
+        "src\\composables\\useScreenshotAction\\index.js",
+        "src\\plugins\\vue-screen\\index.js",
+        "src\\store\\preference\\model\\device\\index.js",
+        "CHANGELOG.md",
+        "src\\composables\\index.js",
+        "electron\\exposes\\adb\\helpers\\battery\\index.js",
+        "src\\utils\\device\\generateAdbPairingQR\\index.js",
+        "electron\\helpers\\edger\\index.js"
+      ],
+      "device connection": [
+        "src\\dicts\\device\\index.js",
+        "src\\utils\\device\\generateAdbPairingQR\\index.js",
+        "electron\\resources\\extra\\linux\\android-platform-tools\\NOTICE.txt",
+        "electron\\exposes\\adb\\helpers\\scanner\\index.js",
+        "src\\components\\PreferenceForm\\components\\helper.js",
+        "src\\store\\index.js",
+        "PRIVACY.md",
+        "src\\store\\preference\\model\\index.js",
+        "src\\store\\device\\helpers\\index.js",
+        "src\\utils\\device\\index.js"
+      ]
+    }
+  }
+}

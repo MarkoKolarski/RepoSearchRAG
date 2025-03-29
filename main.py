@@ -1,13 +1,14 @@
 import argparse
 import traceback
+import os
 from repository_utils import (
     clone_repository, 
     prepare_repository_files, 
     AdvancedCodeRAGSystem,
     QueryExpander,
     RAGEvaluator,
+    create_summarizer,
 )
-import os
 
 def parse_args():
     """
@@ -44,6 +45,11 @@ def parse_args():
         action="store_true",
         help="Enable generation of file content summaries"
     )
+    parser.add_argument(
+        "--use_large_summarizer", 
+        action="store_true",
+        help="Use larger, more capable summarization model"
+    )
     return parser.parse_args()
 
 def read_file_content(file_path):
@@ -65,6 +71,14 @@ def main():
         # Parse arguments
         args = parse_args()
 
+        # Create summarizer based on user input
+        if args.use_large_summarizer:
+            print("Using large summarization model...")
+            summarizer = create_summarizer(use_large_model=True)
+        else:
+            print("Using default small summarization model...")
+            summarizer = create_summarizer()
+
         # Clone repository
         cloned_path = clone_repository(args.repo_url, args.repo_path)
         if not cloned_path:
@@ -77,9 +91,10 @@ def main():
             print("No files found in repository.")
             return
 
-        # Initialize Advanced CodeRAG system
+        # Initialize Advanced CodeRAG system with custom summarizer
         rag_system = AdvancedCodeRAGSystem(
-            retrieval_strategy=args.retrieval_strategy
+            retrieval_strategy=args.retrieval_strategy,
+            summarizer=summarizer  # Pass the created summarizer
         )
 
         # Initialize query expander
