@@ -132,23 +132,67 @@ def prepare_repository_files(repo_path: str) -> Dict[str, str]:
     return file_contents
 
 class LRUCache:
-    """Simple LRU Cache for embeddings"""
+    """
+    LRU Cache implementation for storing embeddings with performance monitoring.
+    Uses OrderedDict for explicit ordering tracking.
+    """
     def __init__(self, capacity=100):
-        self.cache = {}
+        from collections import OrderedDict
+        self.cache = OrderedDict()
         self.capacity = capacity
-
+        # Optional: performance monitoring
+        self.hits = 0
+        self.misses = 0
+    
     def get(self, key):
-        if key not in self.cache:
+        """
+        Retrieve an item from the cache.
+        Moves the accessed item to the end (most recently used position).
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            The cached value or None if not found
+        """
+        if key in self.cache:
+            # Move to end = most recently used
+            value = self.cache.pop(key)
+            self.cache[key] = value
+            self.hits += 1
+            return value
+        else:
+            self.misses += 1
             return None
-        self.cache[key] = self.cache.pop(key)
-        return self.cache[key]
-
+    
     def put(self, key, value):
+        """
+        Store an item in the cache.
+        If key exists, updates the value and moves to most recently used position.
+        If cache is full, removes least recently used item.
+        
+        Args:
+            key: Cache key
+            value: Value to store
+        """
         if key in self.cache:
             del self.cache[key]
         elif len(self.cache) >= self.capacity:
-            self.cache.pop(next(iter(self.cache)))
+            # Remove the first item = least recently used
+            self.cache.popitem(last=False)
         self.cache[key] = value
+    
+    def get_stats(self):
+        """Return cache performance statistics"""
+        total = self.hits + self.misses
+        hit_rate = self.hits / total if total > 0 else 0
+        return {
+            "capacity": self.capacity,
+            "current_size": len(self.cache),
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": hit_rate
+        }
 
 
 class AdvancedSummarizer:
@@ -817,35 +861,36 @@ class QueryExpander:
 
     def expand_query(self, query: str) -> List[str]:
         """
-        Enhanced query expansion with domain-specific techniques
+        Enhanced query expansion with domain-specific techniques.
         """
         try:
             # Tokenize and clean query
             tokens = nltk.word_tokenize(query.lower())
             tokens = [re.sub(r'[^a-z0-9]', '', token) for token in tokens]
-            
+
             # Code-specific query expansion
             code_context_mappings = {
                 'screen': ['recording', 'capture', 'display'],
                 'device': ['connection', 'adb', 'android'],
                 'android': ['mobile', 'smartphone', 'screen'],
             }
-            
-            # Expand with domain-specific context
-            expanded_tokens = tokens.copy()
+
+            # Synonym expansion using WordNet
+            synonyms = []
             for token in tokens:
-                expanded_tokens.extend(
-                    code_context_mappings.get(token, [])
-                )
-            
+                synonyms.extend(code_context_mappings.get(token, []))
+                for syn in nltk.corpus.wordnet.synsets(token):
+                    synonyms.extend([lemma.name() for lemma in syn.lemmas()])
+
             # Generate multiple query variations
+            expanded_tokens = tokens + list(set(synonyms))
             variations = [
                 ' '.join(expanded_tokens),
                 query.lower(),
                 ' '.join(reversed(tokens)),
                 ' '.join(set(expanded_tokens))  # Remove duplicates
             ]
-            
+
             return list(set(variations))
         except Exception as e:
             print(f"Query expansion error: {e}")
