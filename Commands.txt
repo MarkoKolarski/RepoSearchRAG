@@ -1,14 +1,24 @@
-#kreiranje
+# Creating the virtual environment
 python -m venv rag_env
 
-#aktivacija
+# Activating the virtual environment
 .\rag_env\Scripts\Activate
 
-# Čuvanje trenutnih biblioteka
+# Saving the current libraries
 pip freeze > requirements.txt
 
-# Kasnija instalacija istih
+# Later installation of the same libraries
 pip install -r requirements.txt
 
-#TODO
-.gitignore
+# Using the local model (as before)
+python main.py --generate_summaries
+
+# Using Gemini API via argument
+python main.py --generate_summaries --use_gemini --gemini_api_key "your-api-key" 
+
+# Using Gemini API via environment variable
+# (first set GEMINI_API_KEY=your-api-key)
+python main.py --generate_summaries --use_gemini
+
+# With model selection
+python main.py --generate_summaries --use_gemini --gemini_model "gemini-1.5-flash"

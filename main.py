@@ -50,6 +50,22 @@ def parse_args():
         action="store_true",
         help="Use larger, more capable summarization model"
     )
+    parser.add_argument(
+        "--use_gemini",
+        action="store_true",
+        help="Use Google Gemini API for summarization"
+    )
+    parser.add_argument(
+        "--gemini_api_key",
+        type=str,
+        help="Google Gemini API key (or set GOOGLE_API_KEY environment variable)"
+    )
+    parser.add_argument(
+        "--gemini_model",
+        type=str,
+        default="gemini-1.5-flash",
+        help="Google Gemini model to use (default: gemini-1.5-flash)"
+    )
     return parser.parse_args()
 
 def read_file_content(file_path):
@@ -71,8 +87,21 @@ def main():
         # Parse arguments
         args = parse_args()
 
+        # Get API key from command line or environment variable
+        api_key = args.gemini_api_key or os.environ.get("GOOGLE_API_KEY")
+        
         # Create summarizer based on user input
-        if args.use_large_summarizer:
+        if args.use_gemini:
+            if not api_key:
+                print("Error: Google Gemini API key must be provided via --gemini_api_key or GOOGLE_API_KEY environment variable")
+                return
+            print(f"Using Google Gemini API with {args.gemini_model} model...")
+            summarizer = create_summarizer(
+                use_api=True, 
+                api_key=api_key, 
+                api_model_name=args.gemini_model
+            )
+        elif args.use_large_summarizer:
             print("Using large summarization model...")
             summarizer = create_summarizer(use_large_model=True)
         else:

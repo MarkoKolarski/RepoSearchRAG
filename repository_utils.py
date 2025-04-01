@@ -12,6 +12,7 @@ from listwise_reranker import ListwiseReranker
 import multiprocessing
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+import google.generativeai as genai
 
 
 
@@ -151,13 +152,25 @@ class LRUCache:
 
 
 class AdvancedSummarizer:
-    def __init__(self, model_name: str = "google/flan-t5-small", max_length: int = 150):
+    def __init__(
+        self,
+        model_name: str = "google/flan-t5-small",
+        device: str = None,
+        max_length: int = 200,
+        use_api: bool = False,
+        api_model_name: str = "gemini-1.5-flash",
+        api_key: Optional[str] = None,
+    ):
         """
-        Initialize Advanced Summarizer with LLM capabilities.
+        Initialize the summarizer with support for both local and Gemini API-based models.
         
         Args:
-            model_name (str): Hugging Face model name for the language model
-            max_length (int): Maximum length of generated summaries
+            model_name (str): Local model name for Hugging Face.
+            device (str): Device to run the local model on (e.g., "cuda" or "cpu").
+            max_length (int): Maximum length for generated summaries.
+            use_api (bool): Whether to use the Gemini API-based model.
+            api_model_name (str): Gemini API model name (e.g., "gemini-1.5-flash").
+            api_key (str): API key for the Gemini API.
         """
         # Download necessary NLTK resources
         nltk.download('punkt', quiet=True)
@@ -171,14 +184,24 @@ class AdvancedSummarizer:
             'system': ['auto', 'import', 'configuration']
         }
         
-        # Initialize language model and tokenizer
-        self.model_name = model_name
+        self.use_api = use_api
+        self.api_model_name = api_model_name
+        self.api_key = api_key
         self.max_length = max_length
-        self._tokenizer = None
-        self._model = None
         
-        # Device configuration
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if not use_api:
+            # Initialize local model
+            self.model_name = model_name
+            self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+            self._tokenizer = None
+            self._model = None
+        else:
+            # Ensure API key is provided
+            if not api_key:
+                raise ValueError("API key must be provided for Gemini API-based summarization.")
+            
+            # Configure Google Generative AI with the API key
+            genai.configure(api_key=api_key)
 
     @property
     def tokenizer(self):
@@ -216,38 +239,51 @@ class AdvancedSummarizer:
 
     def summarize_with_llm(self, text: str, prompt_template: str) -> str:
         """
-        Generate summary using the language model.
+        Generate summary using either a local or API-based model.
         
         Args:
-            text (str): Text to summarize
-            prompt_template (str): Template for the prompt
+            text (str): Text to summarize.
+            prompt_template (str): Template for the prompt.
         
         Returns:
-            str: Generated summary
+            str: Generated summary.
         """
-        # Truncate text if too long to fit in model context
-        max_input_length = self.tokenizer.model_max_length - 50  # Leave room for prompt
-        input_ids = self.tokenizer.encode(text, truncation=True, max_length=max_input_length)
-        truncated_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-        
-        # Create prompt - Fix: Use format with named parameters instead of direct substitution
-        prompt = prompt_template.format(text=truncated_text, lang=self.model_name)
-        
-        # Generate summary
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        
-        # Generate with parameters for better summaries
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_length=self.max_length,
-                min_length=30,
-                num_beams=4,
-                no_repeat_ngram_size=3,
-                early_stopping=True,
-            )
-        
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        if self.use_api:
+            # Use API-based model
+            prompt = prompt_template.format(text=text)
+            try:
+
+                # Configure API with key
+                if hasattr(self, 'api_key') and self.api_key:
+                    genai.configure(api_key=self.api_key)
+                
+                # Create model and generate content
+                model = genai.GenerativeModel(self.api_model_name)
+                response = model.generate_content(prompt)
+                
+                return response.text.strip()
+            except Exception as e:
+                print(f"Error with API-based summarization: {e}")
+                return "Error generating summary with API-based model."
+        else:
+            # Use local model
+            max_input_length = self.tokenizer.model_max_length - 50  # Leave room for prompt
+            input_ids = self.tokenizer.encode(text, truncation=True, max_length=max_input_length)
+            truncated_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+            
+            prompt = prompt_template.format(text=truncated_text)
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_length=self.max_length,
+                    min_length=30,
+                    num_beams=4,
+                    no_repeat_ngram_size=3,
+                    early_stopping=True,
+                )
+            return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
     def summarize_code_file(self, text: str, file_path: str) -> Dict[str, Any]:
         """
@@ -470,9 +506,27 @@ Focus on the main topic and key points.
             print(f"Summary generation error for {file_path}: {e}")
             return f"Summary unavailable for {os.path.basename(file_path)}: {str(e)}"
 
-def create_summarizer(use_large_model=False):
-    """Factory function to create a summarizer with appropriate model size"""
-    if use_large_model:
+def create_summarizer(use_large_model=False, use_api=False, api_key=None, api_model_name="gpt-3.5-turbo"):
+    """
+    Factory function to create a summarizer with appropriate model size or API-based model.
+
+    Args:
+        use_large_model (bool): Whether to use a large local model.
+        use_api (bool): Whether to use an API-based model.
+        api_key (str): API key for the API-based model.
+        api_model_name (str): API model name (e.g., "gpt-3.5-turbo").
+
+    Returns:
+        AdvancedSummarizer: Configured summarizer instance.
+    """
+    if use_api and api_key:
+        return AdvancedSummarizer(
+            use_api=True,
+            api_model_name=api_model_name,
+            api_key=api_key,
+            max_length=200
+        )
+    elif use_large_model:
         # Use a more capable model for better summaries (requires more resources)
         return AdvancedSummarizer(model_name="google/flan-t5-base", max_length=200)
     else:
@@ -941,13 +995,14 @@ class RAGEvaluator:
         
         return np.mean(precisions)
 
-    def generate_report(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> Dict:
+    def generate_report(self, retrieved_results: Dict[str, List[str]], k: int = 10, verbose: bool = True) -> Dict:
         """
         Generate comprehensive evaluation report with advanced metrics.
         
         Args:
             retrieved_results (Dict[str, List[str]]): Retrieved results
             k (int): Top-K results to analyze
+            verbose (bool): Whether to print the report (default: True)
         
         Returns:
             Dict: Evaluation metrics
@@ -965,13 +1020,14 @@ class RAGEvaluator:
         total_retrieved = sum(len(results) for results in retrieved_results.values())
         novelty = len(unique_retrieved) / total_retrieved if total_retrieved > 0 else 0
 
-        # Detailed report generation
-        print("\n--- Comprehensive Semantic Evaluation Report ---")
-        print(f"Recall@{k}:           {recall:.4f}")
-        print(f"Precision@{k}:        {precision:.4f}")
-        print(f"F1 Score@{k}:         {f1_score:.4f}")
-        print(f"Retrieval Novelty:    {novelty:.4f}")
-        print("------------------------------------------------")
+        # Detailed report generation - only print if verbose is True
+        if verbose:
+            print("\n--- Comprehensive Semantic Evaluation Report ---")
+            print(f"Recall@{k}:           {recall:.4f}")
+            print(f"Precision@{k}:        {precision:.4f}")
+            print(f"F1 Score@{k}:         {f1_score:.4f}")
+            print(f"Retrieval Novelty:    {novelty:.4f}")
+            print("------------------------------------------------")
 
         return {
             'recall': recall,
