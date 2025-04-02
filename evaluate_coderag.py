@@ -215,6 +215,7 @@ def main():
         print(f"\nEvaluation Results:")
         print(f"  Strategy: {results['strategy']}")
         print(f"  Recall@{args.top_k}: {results['recall']:.4f}")
+        print(f"  Precision@{args.top_k}: {results['precision']:.4f}")
         print(f"  Average Query Time: {results['average_query_time']:.4f} seconds")
         print(f"  Total Evaluation Time: {results['total_time']:.4f} seconds")
 

@@ -1312,8 +1312,7 @@ class RAGEvaluator:
         
         Args:
             ground_truth: Dictionary mapping queries to lists of expected file paths
-            similarity_thresholds: List of similarity thresholds for multi-stage matching 
-                                  (from strict to loose). Defaults to [0.9, 0.7, 0.5, 0.3]
+            similarity_thresholds: List of similarity thresholds for multi-stage matching 0.9, 0.7, 0.5, 0.3
         """
         self.ground_truth = ground_truth
         
@@ -1404,36 +1403,26 @@ class RAGEvaluator:
         return max(similarity_scores)
 
     def calculate_recall(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
-        """
-        Calculate recall using multi-stage semantic matching.
-        
-        Args:
-            retrieved_results: Dictionary mapping queries to lists of retrieved file paths
-            k: Number of top results to consider
-        
-        Returns:
-            Recall score between 0 and 1
-        """
-        if not self.ground_truth:
-            return 0.0
-            
-        query_recalls = []
+        total_relevant = 0
+        total_expected = 0
         
         for query, expected_files in self.ground_truth.items():
-            if not expected_files:
-                continue
-                
-            retrieved_files = retrieved_results.get(query, [])[:k]
-            matched_count = self._count_matched_files(expected_files, retrieved_files)
+            retrieved_files = list(dict.fromkeys(retrieved_results.get(query, [])))[:k]
             
-            # Calculate recall for this query
-            query_recall = matched_count / len(expected_files)
-            query_recalls.append(query_recall)
+            # Check if there are any expected files
+            matched = sum(
+                1 for expected in expected_files
+                if any(
+                    self.calculate_semantic_similarity(expected, retrieved) >= threshold
+                    for retrieved in retrieved_files
+                    for threshold in self.similarity_thresholds
+                )
+            )
+            
+            total_relevant += matched
+            total_expected += len(expected_files)
         
-        # Compute average recall across all queries
-        final_recall = np.mean(query_recalls) if query_recalls else 0.0
-        
-        return min(1.0, final_recall)
+        return total_relevant / total_expected if total_expected > 0 else 0.0
     
     def calculate_precision(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
         """
@@ -1472,9 +1461,6 @@ class RAGEvaluator:
         
         # Compute average precision across all queries
         final_precision = np.mean(query_precisions) if query_precisions else 0.0
-        
-        # Print the precision immediately after calculation
-        print(f"Precision@{k}: {final_precision:.4f}")
         
         return min(1.0, final_precision)
     
@@ -1526,22 +1512,15 @@ class RAGEvaluator:
     def _is_file_matched(self, expected_file: str, retrieved_files: List[str]) -> bool:
         """
         Check if an expected file is matched in the retrieved files using progressive thresholds.
-        
-        Args:
-            expected_file: Expected file path
-            retrieved_files: List of retrieved file paths
-            
-        Returns:
-            True if matched, False otherwise
         """
         if not retrieved_files:
             return False
             
-        # Try different similarity thresholds from strict to loose
+        # Calculate best match score once
+        best_score = self.find_best_match_score(expected_file, retrieved_files)
+        
+        # Check against thresholds from strict to loose
         for threshold in self.similarity_thresholds:
-            best_score = self.find_best_match_score(expected_file, retrieved_files)
-            
-            # If match found above threshold, consider it matched
             if best_score >= threshold:
                 return True
                 
