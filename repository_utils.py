@@ -689,73 +689,103 @@ class AdvancedCodeRAGSystem:
         embeddings: np.ndarray, 
         query_embedding: np.ndarray, 
         file_paths: List[str], 
-        top_k: int = 10
+        top_k: int = 15  # Increased from 10
     ) -> List[int]:
         """
-        Napredna diverse retrieval strategija sa više parametara.
+        Optimized diverse retrieval strategy with refined parameters.
         
         Args:
-            embeddings (np.ndarray): Embeddings svih dokumenata
-            query_embedding (np.ndarray): Embedding upita
-            file_paths (List[str]): Putanje fajlova
-            top_k (int): Broj rezultata za vraćanje
+            embeddings: Embeddings of all documents
+            query_embedding: Embedding of query
+            file_paths: File paths
+            top_k: Number of results to return
         
         Returns:
-            List[int]: Indeksi odabranih dokumenata
+            List of selected document indices
         """
-        # Parametri kontrole
-        lambda_relevance = 0.7  # Kontrola relevantnosti 
-        lambda_diversity = 0.3   # Kontrola diverziteta
+        # Adjusted control parameters
+        lambda_relevance = 0.75  # Slightly higher relevance weight (was 0.7)
+        lambda_diversity = 0.25  # Slightly lower diversity weight (was 0.3)
         
-        # Bonus za ključne fajlove i putanje
+        # Enhanced file path bonus with more keywords
         def compute_path_bonus(file_paths: List[str]) -> np.ndarray:
-            """Izračunava bonus za putanje fajlova"""
+            """Compute bonus for file paths with enhanced weighting"""
             bonus_keywords = [
-                'src', 'main', 'core', 'electron', 
-                'readme', 'composables', 'device'
+                'src', 'main', 'core', 'electron', 'readme', 'composables', 'device',
+                'utils', 'helper', 'component', 'api', 'service', 'controller', 'model',
+                'interface', 'type', 'const', 'config', 'index', 'hook'
             ]
             
-            path_bonus = np.array([
-                1.5 if any(key in path.lower() for key in bonus_keywords) 
-                else 1.0 
-                for path in file_paths
-            ])
+            language_bonus = {
+                'py': 1.2, 'js': 1.2, 'ts': 1.25, 'jsx': 1.2, 'tsx': 1.2,
+                'vue': 1.2, 'go': 1.1, 'java': 1.1, 'rb': 1.1, 'php': 1.1
+            }
             
-            return path_bonus
+            path_bonuses = []
+            for path in file_paths:
+                # Start with base bonus
+                bonus = 1.0
+                
+                # Add keyword bonus
+                if any(key in path.lower() for key in bonus_keywords):
+                    bonus *= 1.6  # Increased from 1.5
+                
+                # Add language/extension bonus
+                ext = path.split('.')[-1] if '.' in path else ''
+                if ext in language_bonus:
+                    bonus *= language_bonus[ext]
+                    
+                # Add bonus for directory depth (files closer to root often more important)
+                depth = path.count('/') + path.count('\\')
+                if depth <= 2:  # Root or near-root files
+                    bonus *= 1.2
+                    
+                path_bonuses.append(bonus)
+                
+            return np.array(path_bonuses)
 
-        # Izračunaj sličnosti i bonus
+        # Calculate similarities and apply bonus
         similarities = np.dot(embeddings, query_embedding.T).flatten()
         path_bonus = compute_path_bonus(file_paths)
         
-        # Primeni bonus na sličnosti
+        # Apply bonus to similarities
         weighted_similarities = similarities * path_bonus
         
-        # Implementacija naprednog MMR algoritma
+        # Enhanced MMR implementation 
         selected_indices = []
         candidates = list(range(len(embeddings)))
         
         while len(selected_indices) < top_k and candidates:
             if not selected_indices:
-                # Prvi put - odaberi najpodobniji dokument
+                # First document - select highest relevance
                 best_index = np.argmax(weighted_similarities)
             else:
-                # Izračunaj score diverziteta
-                diversity_scores = [
-                    # Balansiranje između relevantnosti i diverziteta
-                    lambda_relevance * weighted_similarities[idx] - 
-                    lambda_diversity * np.max([
+                # Calculate MMR scores with dynamic lambda adjustment
+                # As we select more documents, gradually favor diversity more
+                current_lambda_rel = lambda_relevance * (1 - (len(selected_indices) / (top_k * 2)))
+                current_lambda_div = lambda_diversity * (1 + (len(selected_indices) / (top_k * 2)))
+                
+                mmr_scores = []
+                for idx in candidates:
+                    # Relevance component
+                    relevance = weighted_similarities[idx]
+                    
+                    # Diversity component - maximum similarity to any selected document
+                    max_similarity = max([
                         np.dot(embeddings[idx], embeddings[selected].T)
                         for selected in selected_indices
                     ])
-                    for idx in candidates
-                ]
+                    
+                    # Calculate MMR score
+                    mmr_score = current_lambda_rel * relevance - current_lambda_div * max_similarity
+                    mmr_scores.append(mmr_score)
+                    
+                # Select best index
+                best_index = candidates[np.argmax(mmr_scores)]
                 
-                # Odaberi indeks sa najboljim scoreom
-                best_index = candidates[np.argmax(diversity_scores)]
-            
             selected_indices.append(best_index)
             candidates.remove(best_index)
-    
+        
         return selected_indices
     
     def _get_cached_embedding(self, text, cache):
@@ -921,6 +951,49 @@ class QueryExpander:
         except Exception as e:
             print(f"Error generating related queries: {e}")
             return [query.lower()]
+
+    def extract_code_terms(self, query):
+        """
+        Extract code-specific terms from the query.
+        """
+        # Example: Extract terms like 'function', 'class', 'variable'
+        code_keywords = ['function', 'class', 'variable', 'method', 'module', 'import', 'export']
+        return [word for word in query.split() if word.lower() in code_keywords]
+
+    def extract_key_identifiers(self, code_context):
+        """
+        Extract key identifiers from the provided code context.
+        """
+        # Example: Extract identifiers like variable names, function names, etc.
+        identifiers = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', code_context)
+        return list(set(identifiers))[:5]  # Limit to top 5 identifiers
+
+    def improved_query_expansion(self, query, code_context=None):
+        """
+        Perform improved query expansion with code-specific terminology, weighted variations,
+        and context-aware expansions.
+        """
+        # Base expansions
+        expansions = self.expand_query(query)
+        
+        # Add code-specific terminology
+        code_terms = self.extract_code_terms(query)
+        if code_terms:
+            expansions.append(' '.join(code_terms + query.split()))
+        
+        # Add weighted variations
+        for term in query.split():
+            if len(term) > 3:  # Only meaningful terms
+                # Create variations with weighted important terms
+                expansions.append(f"{term} {term} {query}")
+        
+        # Add context-aware expansion
+        if code_context:
+            context_terms = self.extract_key_identifiers(code_context)
+            context_expansion = f"{query} {' '.join(context_terms)}"
+            expansions.append(context_expansion)
+        
+        return expansions
 
 
 class RAGEvaluator:
