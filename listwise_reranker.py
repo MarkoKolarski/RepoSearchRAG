@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import re
 
@@ -140,39 +140,81 @@ class ListwiseReranker:
             return match.group(1)
         return ""
 
-    def _apply_code_boosting(
-        self, 
-        scores: np.ndarray, 
-        candidates: List[str], 
-        query: str
-    ) -> np.ndarray:
-        """Apply code-specific boosting to scores"""
-        boosted_scores = scores.copy()
+    def _apply_code_boosting(self, scores: np.ndarray, candidates: List[str], query: str) -> np.ndarray:
+        """
+        Apply code-specific boosting to scores with multiple heuristics.
         
-        # Get query terms for exact matching
+        Args:
+            scores: Original scores from the model.
+            candidates: List of candidate texts.
+            query: Search query.
+        
+        Returns:
+            np.ndarray: Boosted scores.
+        """
+        boosted_scores = scores.copy()
         query_terms = set(re.findall(r'\w+', query.lower()))
         
         for i, candidate in enumerate(candidates):
-            # Extract path and check for important file patterns
             path = self._extract_file_path(candidate)
-            
-            # Boost important file types
-            if path.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
-                boosted_scores[i] *= 1.15
-                
-            # Boost core/main files
-            if any(pattern in path.lower() for pattern in ['main', 'core', 'index', 'app']):
-                boosted_scores[i] *= 1.1
-                
-            # Boost for exact term matches in content
             content = candidate.lower()
-            matched_terms = sum(1 for term in query_terms if term in content)
-            term_match_ratio = matched_terms / len(query_terms) if query_terms else 0
-            
-            # Apply term match boosting
-            boosted_scores[i] *= (1 + (term_match_ratio * 0.2))
-        
+
+            boost = 1.0  # Start with neutral boost
+
+            # --------- 1. Boost based on file extension (small boost) ----------
+            if path.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
+                boost += 0.05  # +5%
+
+            # --------- 2. Boost for main/core files ----------
+            if any(p in path.lower() for p in ['main', 'core', 'index', 'app']):
+                boost += 0.05
+
+            # --------- 3. Token overlap boost (capped) ----------
+            overlap = self._token_overlap_ratio(query, candidate)
+            boost += min(overlap * 0.15, 0.05)  # Capped at +5%
+
+            # --------- 4. Query terms in file name boost ----------
+            if any(term in path.lower() for term in query_terms):
+                boost += 0.05
+
+            # --------- 5. Early mention of query terms ----------
+            first_occurrence = min((content.find(term) for term in query_terms if term in content), default=-1)
+            if 0 <= first_occurrence < 300:
+                boost += 0.05
+
+            # --------- 6. Comment boost (smaller than before) ----------
+            comment_lines = [line for line in content.splitlines() if line.strip().startswith(('#', '//'))]
+            comment_content = ' '.join(comment_lines).lower()
+            comment_match = sum(1 for term in query_terms if term in comment_content)
+            if comment_match > 0:
+                boost += 0.03
+
+            # --------- 7. Test file boost only if query is test-related ----------
+            if any(w in query.lower() for w in ['test', 'assert', 'unittest', 'pytest']):
+                if 'test' in path.lower():
+                    boost += 0.05
+
+            # --------- Final score ----------
+            boosted_scores[i] = scores[i] * boost
+
         return boosted_scores
+
+    def _token_overlap_ratio(self, query: str, candidate: str) -> float:
+        """
+        Calculate the token overlap ratio between the query and candidate.
+        
+        Args:
+            query: Search query.
+            candidate: Candidate text.
+        
+        Returns:
+            float: Token overlap ratio.
+        """
+        query_tokens = set(re.findall(r'\w+', query.lower()))
+        candidate_tokens = set(re.findall(r'\w+', candidate.lower()))
+        if not query_tokens:
+            return 0.0
+        return len(query_tokens & candidate_tokens) / len(query_tokens)
 
     def predict_relevance(self, query: str, candidate: str) -> float:
         """
