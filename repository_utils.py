@@ -13,6 +13,7 @@ import multiprocessing
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import google.generativeai as genai
+from nltk.corpus import wordnet
 
 
 
@@ -856,45 +857,71 @@ class AdvancedCodeRAGSystem:
 
 class QueryExpander:
     def __init__(self):
-        nltk.download('punkt', quiet=True)
-        nltk.download('wordnet', quiet=True)
-
-    def expand_query(self, query: str) -> List[str]:
-        """
-        Enhanced query expansion with domain-specific techniques.
-        """
+        # Ensure all necessary NLTK resources are downloaded
         try:
-            # Tokenize and clean query
-            tokens = nltk.word_tokenize(query.lower())
-            tokens = [re.sub(r'[^a-z0-9]', '', token) for token in tokens]
+            nltk.data.find('tokenizers/punkt')
+        except LookupError:
+            nltk.download('punkt', quiet=True)
+        
+        try:
+            nltk.data.find('corpora/wordnet')
+        except LookupError:
+            nltk.download('wordnet', quiet=True)
 
-            # Code-specific query expansion
-            code_context_mappings = {
-                'screen': ['recording', 'capture', 'display'],
-                'device': ['connection', 'adb', 'android'],
-                'android': ['mobile', 'smartphone', 'screen'],
-            }
+    def get_synonyms(self, word):
+        synonyms = set()
+        try:
+            for syn in wordnet.synsets(word):
+                for lemma in syn.lemmas():
+                    synonyms.add(lemma.name().replace('_', ' '))
+        except Exception as e:
+            print(f"Error getting synonyms for {word}: {e}")
+        return list(synonyms)
 
-            # Synonym expansion using WordNet
-            synonyms = []
-            for token in tokens:
-                synonyms.extend(code_context_mappings.get(token, []))
-                for syn in nltk.corpus.wordnet.synsets(token):
-                    synonyms.extend([lemma.name() for lemma in syn.lemmas()])
+    def simple_tokenize(self, query):
+        # Use a simple tokenization method as a fallback
+        # Remove punctuation and split on whitespace
+        return re.findall(r'\w+', query.lower())
 
-            # Generate multiple query variations
-            expanded_tokens = tokens + list(set(synonyms))
-            variations = [
-                ' '.join(expanded_tokens),
-                query.lower(),
-                ' '.join(reversed(tokens)),
-                ' '.join(set(expanded_tokens))  # Remove duplicates
+    def context_expand_query(self, query, context_words=None):
+        try:
+            # First try NLTK tokenization
+            try:
+                tokens = nltk.word_tokenize(query.lower())
+            except Exception:
+                # Fallback to simple tokenization if NLTK fails
+                tokens = self.simple_tokenize(query)
+
+            # Get synonyms for each token, limit to first 2
+            expanded_tokens = tokens + [
+                syn for token in tokens 
+                for syn in self.get_synonyms(token)[:2]
             ]
 
-            return list(set(variations))
+            # Add context words if provided
+            if context_words:
+                expanded_tokens.extend(context_words)
+
+            return ' '.join(expanded_tokens)
         except Exception as e:
-            print(f"Query expansion error: {e}")
+            print(f"Error in context_expand_query: {e}")
+            return query.lower()
+
+    def expand_query(self, query, num_variations=3):
+        try:
+            # Different query variations
+            variations = [
+                self.context_expand_query(query),  # Synonym-expanded query
+                query.lower(),  # Lowercase query
+                ' '.join(reversed(query.split()))  # Reversed word order
+            ]
+            
+            # Truncate to requested number of variations
+            return variations[:num_variations]
+        except Exception as e:
+            print(f"Error generating related queries: {e}")
             return [query.lower()]
+
 
 class RAGEvaluator:
     def __init__(self, ground_truth: Dict[str, List[str]], strategies: List[float] = None):

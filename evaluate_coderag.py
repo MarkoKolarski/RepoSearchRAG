@@ -104,6 +104,7 @@ class CodeRAGEvaluator:
 
             # Expand queries
             expanded_queries = self.query_expander.expand_query(query)
+            #expanded_queries = [query]
             
             results = []
             for expanded_query in expanded_queries:
