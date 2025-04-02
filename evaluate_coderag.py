@@ -124,6 +124,7 @@ class CodeRAGEvaluator:
 
         # Calculate Recall@10
         recall = self.evaluator.calculate_recall(retrieved_results, self.top_k)
+        precison = self.evaluator.calculate_precision(retrieved_results, self.top_k)
 
         # Calculate total evaluation time
         total_time = time.time() - start_time
@@ -131,6 +132,7 @@ class CodeRAGEvaluator:
         return {
             "strategy": self.retrieval_strategy,
             "recall": recall,
+            "precision": precison,
             "average_query_time": sum(query_times) / len(query_times),
             "total_time": total_time,
             "retrieved_results": retrieved_results

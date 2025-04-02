@@ -1,13 +1,12 @@
 import argparse
 import traceback
-import os
 from argparse import Namespace
 from repository_utils import (
+    AdvancedCodeRAGSystem,
     clone_repository,
     prepare_repository_files,
-    AdvancedCodeRAGSystem,
-    QueryExpander,
-    create_summarizer,
+    interactive_query_loop,
+    initialize_summarizer
 )
 
 
@@ -77,90 +76,6 @@ def parse_args() -> Namespace:
     )
 
     return parser.parse_args()
-
-
-def read_file_content(file_path: str) -> str:
-    """
-    Safely read file content with error handling.
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-            return f.read()
-    except Exception as e:
-        print(f"[File Error] Failed to read {file_path}: {e}")
-        return ""
-
-
-def initialize_summarizer(args: Namespace):
-    """
-    Create a summarizer instance based on CLI arguments.
-    """
-    if not args.generate_summaries:
-        return None
-
-    api_key = args.gemini_api_key or os.environ.get("GOOGLE_API_KEY")
-
-    if args.use_gemini:
-        if not api_key:
-            print(
-                "Error: Google Gemini API key must be provided via "
-                "--gemini_api_key or GOOGLE_API_KEY environment variable."
-            )
-            return None
-
-        print(f"Using Google Gemini API with model: {args.gemini_model}")
-        return create_summarizer(
-            use_api=True,
-            api_key=api_key,
-            api_model_name=args.gemini_model
-        )
-
-    model_type = "large" if args.use_large_summarizer else "default small"
-    print(f"Using {model_type} summarization model...")
-
-    return create_summarizer(use_large_model=args.use_large_summarizer)
-
-
-def interactive_query_loop(rag_system, repo_files: list, args: Namespace):
-    """
-    Continuously prompt user for queries and return relevant files.
-    """
-    query_expander = QueryExpander()
-
-    print("\nEnter your questions about the codebase (type 'exit' to quit):\n")
-    while True:
-        user_query = input("Your question: ").strip()
-        if user_query.lower() in {"exit", "quit"}:
-            print("Exiting...")
-            break
-
-        expanded_queries = query_expander.expand_query(user_query)
-        all_results = []
-
-        for expanded_query in expanded_queries:
-            results = rag_system.advanced_retrieve(
-                expanded_query,
-                repo_files,
-                args.top_k
-            )
-            all_results.extend(results)
-
-        # Deduplicate results and keep top_k
-        unique_results = list(dict.fromkeys(all_results))[:args.top_k]
-
-        print(f"\nTop {args.top_k} relevant files for: \"{user_query}\"")
-        for file_path in unique_results:
-            print(f"• {file_path}")
-
-            content = read_file_content(file_path)
-
-            if args.generate_summaries and rag_system.summarizer:
-                summary = rag_system.summarizer.generate_summary(content, file_path)
-                print(f"Summary: {summary}\n")
-            else:
-                print()
-
-        print("-" * 60)
 
 
 def main():

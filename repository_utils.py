@@ -6,6 +6,7 @@ import functools
 import multiprocessing
 from typing import Any, Dict, List, Optional, Union, Tuple
 from collections import OrderedDict
+from argparse import Namespace
 
 
 # Third-Party Imports
@@ -139,6 +140,89 @@ def prepare_repository_files(repo_path: str) -> Dict[str, str]:
                     file_contents[file_path] = content
 
     return file_contents
+
+def read_file_content(file_path: str) -> str:
+    """
+    Safely read file content with error handling.
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            return f.read()
+    except Exception as e:
+        print(f"[File Error] Failed to read {file_path}: {e}")
+        return ""
+
+
+def initialize_summarizer(args: Namespace):
+    """
+    Create a summarizer instance based on CLI arguments.
+    """
+    if not args.generate_summaries:
+        return None
+
+    api_key = args.gemini_api_key or os.environ.get("GOOGLE_API_KEY")
+
+    if args.use_gemini:
+        if not api_key:
+            print(
+                "Error: Google Gemini API key must be provided via "
+                "--gemini_api_key or GOOGLE_API_KEY environment variable."
+            )
+            return None
+
+        print(f"Using Google Gemini API with model: {args.gemini_model}")
+        return create_summarizer(
+            use_api=True,
+            api_key=api_key,
+            api_model_name=args.gemini_model
+        )
+
+    model_type = "large" if args.use_large_summarizer else "default small"
+    print(f"Using {model_type} summarization model...")
+
+    return create_summarizer(use_large_model=args.use_large_summarizer)
+
+
+def interactive_query_loop(rag_system, repo_files: list, args: Namespace):
+    """
+    Continuously prompt user for queries and return relevant files.
+    """
+    query_expander = QueryExpander()
+
+    print("\nEnter your questions about the codebase (type 'exit' to quit):\n")
+    while True:
+        user_query = input("Your question: ").strip()
+        if user_query.lower() in {"exit", "quit"}:
+            print("Exiting...")
+            break
+
+        expanded_queries = query_expander.expand_query(user_query)
+        all_results = []
+
+        for expanded_query in expanded_queries:
+            results = rag_system.advanced_retrieve(
+                expanded_query,
+                repo_files,
+                args.top_k
+            )
+            all_results.extend(results)
+
+        # Deduplicate results and keep top_k
+        unique_results = list(dict.fromkeys(all_results))[:args.top_k]
+
+        print(f"\nTop {args.top_k} relevant files for: \"{user_query}\"")
+        for file_path in unique_results:
+            print(f"• {file_path}")
+
+            content = read_file_content(file_path)
+
+            if args.generate_summaries and rag_system.summarizer:
+                summary = rag_system.summarizer.generate_summary(content, file_path)
+                print(f"Summary: {summary}\n")
+            else:
+                print()
+
+        print("-" * 60)
 
 class LRUCache:
     """
@@ -1209,35 +1293,256 @@ class QueryExpander:
         identifiers = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', code_context)
         return list(set(identifiers))[:5]
 
-    def improved_query_expansion(self, query: str, code_context: str = None) -> list:
-        """
-        Perform enhanced query expansion using synonyms, code terms, and context.
 
+class RAGEvaluator:
+    """
+    Evaluator for Retrieval-Augmented Generation (RAG) systems with semantic matching capabilities.
+    
+    This class provides methods to evaluate RAG systems by comparing retrieved results against
+    ground truth using semantic similarity metrics.
+    """
+    
+    def __init__(
+        self, 
+        ground_truth: Dict[str, List[str]], 
+        similarity_thresholds: Optional[List[float]] = None
+    ):
+        """
+        Initialize the RAG evaluator with ground truth data and similarity thresholds.
+        
         Args:
-            query (str): Input query.
-            code_context (str, optional): Raw code for extracting identifiers.
-
-        Returns:
-            list: List of expanded query variations.
+            ground_truth: Dictionary mapping queries to lists of expected file paths
+            similarity_thresholds: List of similarity thresholds for multi-stage matching 
+                                  (from strict to loose). Defaults to [0.9, 0.7, 0.5, 0.3]
         """
-        expansions = self.expand_query(query)
+        self.ground_truth = ground_truth
+        
+        # Multi-stage similarity thresholds from strict to loose matching
+        self.similarity_thresholds = similarity_thresholds or [0.9, 0.7, 0.5, 0.3]
+        
+        # Initialize embedding model for semantic matching
+        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-        # Add code-specific terms if present
-        code_terms = self.extract_code_terms(query)
-        if code_terms:
-            combined = ' '.join(code_terms + query.split())
-            expansions.append(combined)
+    def extract_semantic_context(self, file_path: str) -> str:
+        """
+        Extract meaningful semantic context from a file path.
+        
+        Args:
+            file_path: File path to extract context from
+        
+        Returns:
+            Semantic context string derived from path components
+        """
+        path_parts = file_path.split(os.path.sep)
+        
+        # Use the last 3 path components for context
+        context_parts = path_parts[-3:] if len(path_parts) >= 3 else path_parts
+        
+        # Process each part: remove file extensions and normalize
+        normalized_parts = []
+        for part in context_parts:
+            # Remove file extension
+            part_without_extension = re.sub(r'\.[^.]+$', '', part)
+            # Replace underscores with spaces and convert to lowercase
+            normalized_part = part_without_extension.replace('_', ' ').lower()
+            normalized_parts.append(normalized_part)
+        
+        # Join the normalized parts with spaces
+        context = ' '.join(normalized_parts)
+        
+        return context
 
-        # Add weighted term repetitions
-        for term in query.split():
-            if len(term) > 3:
-                expansions.append(f"{term} {term} {query}")
+    def calculate_semantic_similarity(self, file_path1: str, file_path2: str) -> float:
+        """
+        Compute semantic similarity between two file paths.
+        
+        Args:
+            file_path1: First file path
+            file_path2: Second file path
+        
+        Returns:
+            Semantic similarity score between 0 and 1
+        """
+        # Extract semantic contexts
+        context1 = self.extract_semantic_context(file_path1)
+        context2 = self.extract_semantic_context(file_path2)
+        
+        # Compute embeddings
+        embeddings = self.embedding_model.encode([context1, context2])
+        
+        # Compute cosine similarity
+        embedding1_norm = np.linalg.norm(embeddings[0])
+        embedding2_norm = np.linalg.norm(embeddings[1])
+        
+        # Avoid division by zero
+        if embedding1_norm == 0 or embedding2_norm == 0:
+            return 0.0
+            
+        similarity = np.dot(embeddings[0], embeddings[1]) / (embedding1_norm * embedding2_norm)
+        
+        return float(similarity)
 
-        # Add context-based expansion
-        if code_context:
-            context_terms = self.extract_key_identifiers(code_context)
-            if context_terms:
-                context_expanded_query = f"{query} {' '.join(context_terms)}"
-                expansions.append(context_expanded_query)
+    def find_best_match_score(self, expected_file: str, retrieved_files: List[str]) -> float:
+        """
+        Find the best semantic match score between an expected file and a list of retrieved files.
+        
+        Args:
+            expected_file: The expected file path to match
+            retrieved_files: List of retrieved file paths to match against
+            
+        Returns:
+            Highest similarity score found
+        """
+        if not retrieved_files:
+            return 0.0
+            
+        similarity_scores = [
+            self.calculate_semantic_similarity(expected_file, retrieved_file)
+            for retrieved_file in retrieved_files
+        ]
+        
+        return max(similarity_scores)
 
-        return expansions
+    def calculate_recall(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
+        """
+        Calculate recall using multi-stage semantic matching.
+        
+        Args:
+            retrieved_results: Dictionary mapping queries to lists of retrieved file paths
+            k: Number of top results to consider
+        
+        Returns:
+            Recall score between 0 and 1
+        """
+        if not self.ground_truth:
+            return 0.0
+            
+        query_recalls = []
+        
+        for query, expected_files in self.ground_truth.items():
+            if not expected_files:
+                continue
+                
+            retrieved_files = retrieved_results.get(query, [])[:k]
+            matched_count = self._count_matched_files(expected_files, retrieved_files)
+            
+            # Calculate recall for this query
+            query_recall = matched_count / len(expected_files)
+            query_recalls.append(query_recall)
+        
+        # Compute average recall across all queries
+        final_recall = np.mean(query_recalls) if query_recalls else 0.0
+        
+        return min(1.0, final_recall)
+    
+    def calculate_precision(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
+        """
+        Calculate precision using multi-stage semantic matching.
+        
+        Args:
+            retrieved_results: Dictionary mapping queries to lists of retrieved file paths
+            k: Number of top results to consider
+        
+        Returns:
+            Precision score between 0 and 1
+        """
+        if not self.ground_truth:
+            return 0.0
+            
+        query_precisions = []
+        
+        for query, expected_files in self.ground_truth.items():
+            if not expected_files:
+                continue
+                
+            retrieved_files = retrieved_results.get(query, [])[:k]
+            if not retrieved_files:
+                query_precisions.append(0.0)
+                continue
+                
+            # Count relevant documents among retrieved ones
+            relevant_count = 0
+            for retrieved_file in retrieved_files:
+                if self._is_relevant_file(retrieved_file, expected_files):
+                    relevant_count += 1
+            
+            # Calculate precision for this query
+            query_precision = relevant_count / len(retrieved_files) if retrieved_files else 0.0
+            query_precisions.append(query_precision)
+        
+        # Compute average precision across all queries
+        final_precision = np.mean(query_precisions) if query_precisions else 0.0
+        
+        # Print the precision immediately after calculation
+        print(f"Precision@{k}: {final_precision:.4f}")
+        
+        return min(1.0, final_precision)
+    
+    def _is_relevant_file(self, retrieved_file: str, expected_files: List[str]) -> bool:
+        """
+        Check if a retrieved file is relevant by matching against expected files.
+        
+        Args:
+            retrieved_file: Retrieved file path to check
+            expected_files: List of expected (relevant) file paths
+            
+        Returns:
+            True if relevant, False otherwise
+        """
+        if not expected_files:
+            return False
+            
+        # Check if the retrieved file matches any expected file
+        for expected_file in expected_files:
+            # Try different similarity thresholds from strict to loose
+            for threshold in self.similarity_thresholds:
+                similarity = self.calculate_semantic_similarity(retrieved_file, expected_file)
+                
+                # If similarity is above threshold, consider it relevant
+                if similarity >= threshold:
+                    return True
+                    
+        return False
+    
+    def _count_matched_files(self, expected_files: List[str], retrieved_files: List[str]) -> int:
+        """
+        Count how many expected files match with retrieved files using multi-stage matching.
+        
+        Args:
+            expected_files: List of expected file paths
+            retrieved_files: List of retrieved file paths
+            
+        Returns:
+            Count of matched files
+        """
+        matched_count = 0
+        
+        for expected_file in expected_files:
+            if self._is_file_matched(expected_file, retrieved_files):
+                matched_count += 1
+                
+        return matched_count
+    
+    def _is_file_matched(self, expected_file: str, retrieved_files: List[str]) -> bool:
+        """
+        Check if an expected file is matched in the retrieved files using progressive thresholds.
+        
+        Args:
+            expected_file: Expected file path
+            retrieved_files: List of retrieved file paths
+            
+        Returns:
+            True if matched, False otherwise
+        """
+        if not retrieved_files:
+            return False
+            
+        # Try different similarity thresholds from strict to loose
+        for threshold in self.similarity_thresholds:
+            best_score = self.find_best_match_score(expected_file, retrieved_files)
+            
+            # If match found above threshold, consider it matched
+            if best_score >= threshold:
+                return True
+                
+        return False
