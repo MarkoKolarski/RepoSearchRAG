@@ -1312,7 +1312,7 @@ class RAGEvaluator:
         
         Args:
             ground_truth: Dictionary mapping queries to lists of expected file paths
-            similarity_thresholds: List of similarity thresholds for multi-stage matching 0.9, 0.7, 0.5, 0.3
+            similarity_thresholds: List of similarity thresholds for multi-stage matching
         """
         self.ground_truth = ground_truth
         

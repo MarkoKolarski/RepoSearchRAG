@@ -40,20 +40,28 @@ class CodeRAGEvaluator:
         self.dataset_path = dataset_path
         self.retrieval_strategy = retrieval_strategy
         self.top_k = top_k
-
+        
         # Load dataset
-        self.test_queries = self.load_dataset()
-
+        self.test_queries = self._load_dataset()
+        
         # Performance metrics
         self.results = {}
 
-    def load_dataset(self) -> Dict[str, List[str]]:
-        """Load test queries from a dataset file."""
+    def _load_dataset(self) -> Dict[str, List[str]]:
+        """
+        Load test queries from a dataset file.
+        
+        Returns:
+            Dictionary mapping questions to their relevant file paths
+            
+        Raises:
+            FileNotFoundError: If dataset file doesn't exist
+        """
         if not os.path.exists(self.dataset_path):
             raise FileNotFoundError(f"Dataset file not found: {self.dataset_path}")
 
-        with open(self.dataset_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        with open(self.dataset_path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
 
         # Convert dataset to expected format
         return {
@@ -65,7 +73,12 @@ class CodeRAGEvaluator:
         }
 
     def setup(self):
-        """Set up the repository and prepare files for evaluation."""
+        """
+        Set up the repository and prepare files for evaluation.
+        
+        Raises:
+            RuntimeError: If repository cloning fails or no files are found
+        """
         # Clone repository
         cloned_path = clone_repository(self.repo_url, self.repo_path)
         if not cloned_path:
@@ -76,13 +89,15 @@ class CodeRAGEvaluator:
         if not self.repository_files:
             raise RuntimeError("No files found in repository.")
 
-        # Initialize the RAG system
+        # Initialize the RAG system components
+        self._initialize_rag_components()
+
+    def _initialize_rag_components(self):
+        """Initialize the RAG system and its components."""
         self.query_expander = QueryExpander()
         self.rag_system = AdvancedCodeRAGSystem(
             retrieval_strategy=self.retrieval_strategy,
         )
-
-        # Initialize the evaluator
         self.evaluator = RAGEvaluator(self.test_queries)
 
     def evaluate(self):
@@ -93,57 +108,113 @@ class CodeRAGEvaluator:
             Dict: Performance metrics for the evaluation.
         """
         start_time = time.time()
-
-        # Dictionary to store retrieved results
         retrieved_results = {}
+        query_times = []
 
         # Process each query
-        query_times = []
         for query, expected_files in self.test_queries.items():
             query_start = time.time()
-
-            # Expand queries
-            expanded_queries = self.query_expander.expand_query(query)
-            #expanded_queries = [query]
             
-            results = []
-            for expanded_query in expanded_queries:
-                query_results = self.rag_system.advanced_retrieve(
-                    expanded_query,
-                    self.repository_files,
-                    self.top_k
-                )
-                results.extend(query_results)
-
-            # Remove duplicates and truncate
-            results = list(dict.fromkeys(results))[:self.top_k]
+            # Process query and get results
+            results = self._process_query(query)
             retrieved_results[query] = results
-
+            
+            # Record query processing time
             query_time = time.time() - query_start
             query_times.append(query_time)
 
-        # Calculate Recall@10
+        # Calculate evaluation metrics
+        metrics = self._calculate_metrics(retrieved_results, query_times, start_time)
+        self.results = metrics
+        
+        return metrics
+
+    def _process_query(self, query):
+        """
+        Process a single query through the RAG pipeline.
+        
+        Args:
+            query: The question text to process
+            
+        Returns:
+            List of top-k unique retrieved file paths
+        """
+        # Expand query
+        expanded_queries = self.query_expander.expand_query(query)
+        
+        # Retrieve results for each expanded query
+        results = []
+        for expanded_query in expanded_queries:
+            query_results = self.rag_system.advanced_retrieve(
+                expanded_query,
+                self.repository_files,
+                self.top_k
+            )
+            results.extend(query_results)
+
+        # Remove duplicates and limit to top_k
+        return list(dict.fromkeys(results))[:self.top_k]
+
+    def _calculate_metrics(self, retrieved_results, query_times, start_time):
+        """
+        Calculate performance metrics based on retrieval results.
+        
+        Args:
+            retrieved_results: Dictionary of query->results mappings
+            query_times: List of individual query processing times
+            start_time: Timestamp when evaluation started
+            
+        Returns:
+            Dictionary containing all evaluation metrics
+        """
         recall = self.evaluator.calculate_recall(retrieved_results, self.top_k)
-        precison = self.evaluator.calculate_precision(retrieved_results, self.top_k)
-
-        # Calculate total evaluation time
+        precision = self.evaluator.calculate_precision(retrieved_results, self.top_k)
+        avg_query_time = sum(query_times) / len(query_times) if query_times else 0
         total_time = time.time() - start_time
-
+        
         return {
             "strategy": self.retrieval_strategy,
             "recall": recall,
-            "precision": precison,
-            "average_query_time": sum(query_times) / len(query_times),
+            "precision": precision,
+            "average_query_time": avg_query_time,
             "total_time": total_time,
             "retrieved_results": retrieved_results
         }
 
     def save_results(self, output_path: str = "evaluation_results.json"):
-        """Save evaluation results to a JSON file."""
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(self.results, f, indent=2)
+        """
+        Save evaluation results to a JSON file.
+        
+        Args:
+            output_path: Path where results will be saved
+        """
+        with open(output_path, 'w', encoding='utf-8') as file:
+            json.dump(self.results, file, indent=2)
         print(f"Results saved to {output_path}")
 
+def run_evaluation(evaluator, top_k):
+    """
+    Run the evaluation and display the results.
+    
+    Args:
+        evaluator: The CodeRAGEvaluator instance
+        top_k: Number of top results to consider
+        
+    Returns:
+        Dictionary of evaluation results
+    """
+    print("Running evaluation...")
+    results = evaluator.evaluate()
+    
+    # Print formatted results
+    print(f"\nEvaluation Results:")
+    print(f"  Strategy: {results['strategy']}")
+    print(f"  Recall@{top_k}: {results['recall']:.4f}")
+    print(f"  Precision@{top_k}: {results['precision']:.4f}")
+    print(f"  Average Query Time: {results['average_query_time']:.4f} seconds")
+    print(f"  Total Evaluation Time: {results['total_time']:.4f} seconds")
+    
+    return results
 
 def parse_args():
     """Parse command-line arguments for the evaluation script."""
@@ -151,7 +222,7 @@ def parse_args():
     parser.add_argument(
         "--repo_url",
         type=str,
-        default="https://github.com/viarotel-org/escrcpy",  # Default repository URL
+        default="https://github.com/viarotel-org/escrcpy",
         help="GitHub repository URL",
     )
     parser.add_argument(
@@ -163,13 +234,13 @@ def parse_args():
     parser.add_argument(
         "--dataset",
         type=str,
-        default="escrcpy-commits-generated.json",  # Default dataset file
+        default="escrcpy-commits-generated.json",
         help="Path to evaluation dataset (JSON format)",
     )
     parser.add_argument(
         "--retrieval_strategy",
         type=str,
-        default="diverse",  # Default retrieval strategy
+        default="diverse", 
         choices=["default", "probabilistic", "diverse"],
         help="Retrieval strategy to use (default: diverse)",
     )
@@ -182,14 +253,13 @@ def parse_args():
     parser.add_argument(
         "--output",
         type=str,
-        default="evaluation_results.json",  # Default output file
+        default="evaluation_results.json",
         help="Path to save evaluation results",
     )
     return parser.parse_args()
 
-
 def main():
-    """Main execution function for the evaluation script."""
+
     try:
         # Parse arguments
         args = parse_args()
@@ -207,17 +277,8 @@ def main():
         print("Setting up repository and preparing files...")
         evaluator.setup()
 
-        # Run evaluation
-        print("Running evaluation...")
-        results = evaluator.evaluate()
-
-        # Print results
-        print(f"\nEvaluation Results:")
-        print(f"  Strategy: {results['strategy']}")
-        print(f"  Recall@{args.top_k}: {results['recall']:.4f}")
-        print(f"  Precision@{args.top_k}: {results['precision']:.4f}")
-        print(f"  Average Query Time: {results['average_query_time']:.4f} seconds")
-        print(f"  Total Evaluation Time: {results['total_time']:.4f} seconds")
+         # Run evaluation and display results
+        results = run_evaluation(evaluator, args.top_k)
 
         # Save results
         evaluator.results = results

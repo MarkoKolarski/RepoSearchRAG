@@ -1,10 +1,14 @@
+import re
+from typing import Dict, List, Optional
+
 import numpy as np
 import torch
-from typing import List, Dict, Tuple, Optional
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
-import re
+
 
 class ListwiseReranker:
+    """A reranker that orders search results based on relevance to a query using a cross-encoder model."""
+
     def __init__(
         self, 
         model_name: str = "cross-encoder/ms-marco-MiniLM-L-12-v2",
@@ -13,13 +17,13 @@ class ListwiseReranker:
         boost_config: Optional[Dict[str, float]] = None
     ):
         """
-        Enhanced Listwise Reranker with evaluation features.
+        Initialize the reranker with a cross-encoder model and boosting configuration.
         
         Args:
-            model_name (str): Hugging Face cross-encoder model name
-            device (str): Compute device (cuda/cpu)
-            log_reranking (bool): Enable detailed reranking logs
-            boost_config (dict): Custom boosting configuration
+            model_name: Hugging Face cross-encoder model name
+            device: Compute device (cuda/cpu)
+            log_reranking: Enable detailed reranking logs
+            boost_config: Custom boosting configuration
         """
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -49,22 +53,24 @@ class ListwiseReranker:
         top_k: int = 10,
         file_contents: Dict[str, str] = None
     ) -> List[str]:
+        """
+        Rerank candidates based on relevance to the query.
+        
+        Args:
+            query: The search query
+            candidates: List of candidate documents
+            top_k: Number of top results to return
+            file_contents: Optional dictionary mapping file paths to contents
+            
+        Returns:
+            List of reranked candidates, limited to top_k results
+        """
         if not candidates:
             return []
 
         code_keywords = self._extract_code_keywords(query)
-
-        inputs = []
-        for candidate in candidates:
-            file_path = self._extract_file_path(candidate)
-            extension = file_path.split('.')[-1] if '.' in file_path else ''
-            enhanced_query = query
-            if extension:
-                enhanced_query = f"[{extension}] {query}"
-            if code_keywords:
-                enhanced_query = f"{enhanced_query} {' '.join(code_keywords)}"
-            inputs.append((enhanced_query, candidate))
-
+        inputs = self._prepare_inputs(query, candidates, code_keywords)
+        
         features = self.tokenizer(
             inputs, 
             padding=True, 
@@ -81,46 +87,83 @@ class ListwiseReranker:
         reranked_candidates = [candidates[i] for i in ranked_indices[:top_k]]
 
         if self.log_reranking:
-            reranking_details = [
-                {
-                    'candidate': candidates[i],
-                    'original_score': scores[i],
-                    'boosted_score': boosted_scores[i],
-                    'rank': rank + 1
-                }
-                for rank, i in enumerate(ranked_indices[:top_k])
-            ]
-            self.reranking_log.append({
-                'query': query,
-                'candidates': reranking_details
-            })
+            self._log_reranking_results(query, candidates, scores, boosted_scores, ranked_indices, top_k)
 
         return reranked_candidates
 
+    def _prepare_inputs(self, query: str, candidates: List[str], code_keywords: List[str]) -> List[tuple]:
+        """Prepare inputs for the model by enhancing queries with file extensions and code keywords."""
+        inputs = []
+        for candidate in candidates:
+            file_path = self._extract_file_path(candidate)
+            extension = file_path.split('.')[-1] if '.' in file_path else ''
+            enhanced_query = query
+            
+            if extension:
+                enhanced_query = f"[{extension}] {query}"
+                
+            if code_keywords:
+                enhanced_query = f"{enhanced_query} {' '.join(code_keywords)}"
+                
+            inputs.append((enhanced_query, candidate))
+            
+        return inputs
+
+    def _log_reranking_results(
+        self, 
+        query: str, 
+        candidates: List[str], 
+        scores: np.ndarray, 
+        boosted_scores: np.ndarray, 
+        ranked_indices: np.ndarray, 
+        top_k: int
+    ) -> None:
+        """Log detailed information about the reranking process."""
+        reranking_details = [
+            {
+                'candidate': candidates[i],
+                'original_score': scores[i],
+                'boosted_score': boosted_scores[i],
+                'rank': rank + 1
+            }
+            for rank, i in enumerate(ranked_indices[:top_k])
+        ]
+        
+        self.reranking_log.append({
+            'query': query,
+            'candidates': reranking_details
+        })
+
     def _extract_code_keywords(self, query: str) -> List[str]:
+        """Extract programming-related keywords from the query."""
         code_indicators = [
             'function', 'class', 'method', 'import', 'def', 
             'return', 'variable', 'parameter', 'async', 'await',
             'callback', 'promise', 'component', 'interface'
         ]
+        
         keywords = []
         for word in query.lower().split():
-            if word in code_indicators or (
+            is_code_indicator = word in code_indicators
+            is_likely_code_term = (
                 len(word) > 2 and (
                     '_' in word or 
                     (word[0].islower() and any(c.isupper() for c in word[1:]))
                 )
-            ):
+            )
+            
+            if is_code_indicator or is_likely_code_term:
                 keywords.append(word)
+                
         return keywords
 
     def _extract_file_path(self, candidate: str) -> str:
+        """Extract file path from candidate text."""
         match = re.search(r"File Path: ([^\n]+)", candidate)
-        if match:
-            return match.group(1)
-        return ""
+        return match.group(1) if match else ""
 
     def _apply_code_boosting(self, scores: np.ndarray, candidates: List[str], query: str) -> np.ndarray:
+        """Apply code-specific boosting factors to base relevance scores."""
         cfg = self.boost_config
         boosted_scores = scores.copy()
         query_terms = set(re.findall(r'\w+', query.lower()))
@@ -130,44 +173,110 @@ class ListwiseReranker:
             content = candidate.lower()
             boost = 1.0
 
-            if path.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
-                boost += cfg["file_extension_boost"]
-
-            if any(p in path.lower() for p in ['main', 'core', 'index', 'app']):
-                boost += cfg["main_file_boost"]
-
-            overlap = self._token_overlap_ratio(query, candidate)
-            boost += min(overlap * cfg["token_overlap_weight"], cfg["token_overlap_cap"])
-
-            if any(term in path.lower() for term in query_terms):
-                boost += cfg["filename_query_match_boost"]
-
-            first_occurrence = min((content.find(term) for term in query_terms if term in content), default=-1)
-            if 0 <= first_occurrence < 300:
-                boost += cfg["early_query_mention_boost"]
-
-            comment_lines = [line for line in content.splitlines() if line.strip().startswith(('#', '//'))]
-            comment_content = ' '.join(comment_lines).lower()
-            comment_match = sum(1 for term in query_terms if term in comment_content)
-            if comment_match > 0:
-                boost += cfg["comment_match_boost"]
-
-            if any(w in query.lower() for w in ['test', 'assert', 'unittest', 'pytest']):
-                if 'test' in path.lower():
-                    boost += cfg["test_file_boost"]
+            # Apply boosting factors
+            boost = self._apply_extension_boost(boost, path, cfg)
+            boost = self._apply_main_file_boost(boost, path, cfg)
+            boost = self._apply_token_overlap_boost(boost, query, candidate, cfg)
+            boost = self._apply_filename_match_boost(boost, path, query_terms, cfg)
+            boost = self._apply_early_mention_boost(boost, content, query_terms, cfg)
+            boost = self._apply_comment_match_boost(boost, content, query_terms, cfg)
+            boost = self._apply_test_file_boost(boost, path, query, cfg)
 
             boosted_scores[i] = scores[i] * boost
 
         return boosted_scores
+    
+    def _apply_extension_boost(self, boost: float, path: str, cfg: Dict[str, float]) -> float:
+        """Boost scores for common programming file extensions."""
+        if path.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
+            boost += cfg["file_extension_boost"]
+        return boost
+    
+    def _apply_main_file_boost(self, boost: float, path: str, cfg: Dict[str, float]) -> float:
+        """Boost scores for main/core files."""
+        if any(p in path.lower() for p in ['main', 'core', 'index', 'app']):
+            boost += cfg["main_file_boost"]
+        return boost
+    
+    def _apply_token_overlap_boost(self, boost: float, query: str, candidate: str, cfg: Dict[str, float]) -> float:
+        """Boost scores based on token overlap between query and candidate."""
+        overlap = self._token_overlap_ratio(query, candidate)
+        boost += min(overlap * cfg["token_overlap_weight"], cfg["token_overlap_cap"])
+        return boost
+    
+    def _apply_filename_match_boost(
+        self, 
+        boost: float, 
+        path: str, 
+        query_terms: set, 
+        cfg: Dict[str, float]
+    ) -> float:
+        """Boost scores when query terms appear in the filename."""
+        if any(term in path.lower() for term in query_terms):
+            boost += cfg["filename_query_match_boost"]
+        return boost
+    
+    def _apply_early_mention_boost(
+        self, 
+        boost: float, 
+        content: str, 
+        query_terms: set, 
+        cfg: Dict[str, float]
+    ) -> float:
+        """Boost scores when query terms appear early in the content."""
+        first_occurrence = min((content.find(term) for term in query_terms if term in content), default=-1)
+        if 0 <= first_occurrence < 300:
+            boost += cfg["early_query_mention_boost"]
+        return boost
+    
+    def _apply_comment_match_boost(
+        self, 
+        boost: float, 
+        content: str, 
+        query_terms: set, 
+        cfg: Dict[str, float]
+    ) -> float:
+        """Boost scores when query terms appear in comments."""
+        comment_lines = [line for line in content.splitlines() if line.strip().startswith(('#', '//'))]
+        comment_content = ' '.join(comment_lines).lower()
+        comment_match = sum(1 for term in query_terms if term in comment_content)
+        if comment_match > 0:
+            boost += cfg["comment_match_boost"]
+        return boost
+    
+    def _apply_test_file_boost(self, boost: float, path: str, query: str, cfg: Dict[str, float]) -> float:
+        """Boost scores for test files when the query is test-related."""
+        if any(w in query.lower() for w in ['test', 'assert', 'unittest', 'pytest']):
+            if 'test' in path.lower():
+                boost += cfg["test_file_boost"]
+        return boost
 
     def _token_overlap_ratio(self, query: str, candidate: str) -> float:
+        """
+        Calculate the ratio of query tokens that appear in the candidate.
+        
+        Returns:
+            Float between 0 and 1 representing overlap ratio
+        """
         query_tokens = set(re.findall(r'\w+', query.lower()))
         candidate_tokens = set(re.findall(r'\w+', candidate.lower()))
+        
         if not query_tokens:
             return 0.0
+            
         return len(query_tokens & candidate_tokens) / len(query_tokens)
 
-    def predict_relevance(self, query: str, candidate: str) -> float:
+    def predict_relevance(self, query: str, candidate: str) -> Dict[str, float]:
+        """
+        Predict the relevance of a single candidate to the query.
+        
+        Args:
+            query: The search query
+            candidate: The candidate document
+            
+        Returns:
+            Dictionary with relevance metrics (score, confidence, logits)
+        """
         inputs = self.tokenizer(
             [query, candidate], 
             return_tensors="pt"
@@ -187,40 +296,60 @@ class ListwiseReranker:
         }
 
     def get_reranking_log(self) -> List[Dict]:
+        """Get the log of reranking operations."""
         return self.reranking_log
 
-    def reset_reranking_log(self):
+    def reset_reranking_log(self) -> None:
+        """Clear the reranking log."""
         self.reranking_log = []
 
 
-# 🔍 Evaluacija rerankera pomoću Recall@10
 def recall_at_k(ranked_candidates: List[str], relevant_files: List[str], k: int = 10) -> float:
+    """
+    Calculate recall@k metric.
+    
+    Args:
+        ranked_candidates: Ordered list of candidates
+        relevant_files: List of relevant files (ground truth)
+        k: Number of top results to consider
+        
+    Returns:
+        Recall@k score (0 to 1)
+    """
     top_k = ranked_candidates[:k]
     return float(any(file in top_k for file in relevant_files))
 
 
-def evaluate_reranker(reranker: ListwiseReranker, dataset: List[Dict], generate_candidates_fn, top_k: int = 10):
+def evaluate_reranker(
+    reranker: ListwiseReranker, 
+    dataset: List[Dict], 
+    generate_candidates_fn, 
+    top_k: int = 10
+) -> float:
     """
-    Evaluates the reranker on a dataset using Recall@10.
+    Evaluate the reranker on a dataset using Recall@k.
 
     Args:
-        reranker: The ListwiseReranker instance.
-        dataset: List of dicts with 'question' and 'files' (ground truth).
-        generate_candidates_fn: Function that takes query and returns candidate file paths.
-        top_k: Number of top results to consider.
+        reranker: The ListwiseReranker instance
+        dataset: List of dicts with 'question' and 'files' (ground truth)
+        generate_candidates_fn: Function that takes query and returns candidate file paths
+        top_k: Number of top results to consider
 
     Returns:
-        float: Recall@k score.
+        Recall@k score
     """
     total = len(dataset)
     recall_count = 0
+    
     for sample in dataset:
         query = sample["question"]
         relevant_files = sample["files"]
         candidates = generate_candidates_fn(query)
         reranked = reranker.rerank(query, candidates, top_k=top_k)
+        
         if any(f in reranked for f in relevant_files):
             recall_count += 1
+            
     recall = recall_count / total
     print(f"Recall@{top_k}: {recall:.4f}")
     return recall
