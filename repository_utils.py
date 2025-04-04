@@ -705,16 +705,16 @@ def create_summarizer(
     use_large_model: bool = False,
     use_api: bool = False,
     api_key: str = None,
-    api_model_name: str = "gpt-3.5-turbo"
+    api_model_name: str = "google/flan-t5-small"
 ):
     """
     Factory function to create a summarizer instance based on configuration.
 
     Args:
         use_large_model (bool): If True, use a larger local model for better quality.
-        use_api (bool): If True, use an API-based model (e.g., OpenAI).
+        use_api (bool): If True, use an API-based model.
         api_key (str): API key required for using the API-based model.
-        api_model_name (str): Name of the API model to use (default: "gpt-3.5-turbo").
+        api_model_name (str): Name of the API model to use.
 
     Returns:
         AdvancedSummarizer: Configured summarizer instance.
