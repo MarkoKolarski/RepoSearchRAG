@@ -1263,36 +1263,7 @@ class QueryExpander:
         except Exception as e:
             print(f"[Variation Error] Failed to generate query variations: {e}")
             return [query.lower()]
-
-    def extract_code_terms(self, query: str) -> list:
-        """
-        Extract code-related keywords from the query.
-
-        Args:
-            query (str): Input query.
-
-        Returns:
-            list: List of code-specific terms.
-        """
-        code_keywords = [
-            'function', 'class', 'variable', 'method',
-            'module', 'import', 'export'
-        ]
-        return [word for word in query.split() if word.lower() in code_keywords]
-
-    def extract_key_identifiers(self, code_context: str) -> list:
-        """
-        Extract identifiers (e.g., variable/function names) from code context.
-
-        Args:
-            code_context (str): Raw code string.
-
-        Returns:
-            list: List of unique identifiers (max 5).
-        """
-        identifiers = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', code_context)
-        return list(set(identifiers))[:5]
-
+        
 
 class RAGEvaluator:
     """
