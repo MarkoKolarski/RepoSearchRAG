@@ -117,27 +117,29 @@ def prepare_repository_files(repo_path: str) -> Dict[str, str]:
                     file_paths.append(full_path)
         return file_paths
 
-    def update_progress_bar(result):
-        pbar.update(1)
-        return result
-
     # Step 1: Collect all relevant files
     files = collect_files(repo_path)
 
     # Step 2: Read all files in parallel using multiprocessing
     file_contents = {}
-    with multiprocessing.Pool(processes=max(1, multiprocessing.cpu_count() - 1)) as pool:
-        with tqdm(total=len(files), desc="Reading Repository Files", unit="file") as pbar:
-            results = [
-                (file_path, pool.apply_async(read_file_with_encoding, args=(file_path,), callback=update_progress_bar))
-                for file_path in files
-            ]
+    start_time = time.time()
+    print("Reading repository files...", end="", flush=True)
 
-            # Step 3: Collect results
-            for file_path, async_result in results:
-                content = async_result.get()
-                if content:
-                    file_contents[file_path] = content
+    with multiprocessing.Pool(processes=max(1, multiprocessing.cpu_count() - 1)) as pool:
+        results = [
+            (file_path, pool.apply_async(read_file_with_encoding, args=(file_path,)))
+            for file_path in files
+        ]
+
+        # Step 3: Collect results
+        for file_path, async_result in results:
+            content = async_result.get()
+            if content:
+                file_contents[file_path] = content
+
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f" Done (took {elapsed:.2f} seconds)")
 
     return file_contents
 
@@ -190,11 +192,16 @@ def interactive_query_loop(rag_system, repo_files: list, args: Namespace):
     query_expander = QueryExpander()
 
     print("\nEnter your questions about the codebase (type 'exit' to quit):\n")
+    first_iteration = True
     while True:
         user_query = input("Your question: ").strip()
         if user_query.lower() in {"exit", "quit"}:
             print("Exiting...")
             break
+
+        if not first_iteration:
+            print("Processing queries... please wait.")
+        first_iteration = False
 
         expanded_queries = query_expander.expand_query(user_query)
         all_results = []
@@ -775,6 +782,9 @@ class AdvancedCodeRAGSystem:
         # Setup retrieval strategy
         self._setup_retrieval_strategy(retrieval_strategy)
 
+        # Flag to ensure the message is printed only once
+        self._processing_message_shown = False
+
     def _setup_retrieval_strategy(self, retrieval_strategy: str) -> None:
         """
         Set up the retrieval strategy based on the provided name.
@@ -1151,6 +1161,11 @@ class AdvancedCodeRAGSystem:
         """
         # Advanced reranking
         reranked_contents = self.reranker.rerank(query, retrieved_contents, top_k)
+
+        # Ensure the processing message is printed only once
+        if not self._processing_message_shown:
+            print("Processing queries... please wait.")
+            self._processing_message_shown = True
         
         # Match reranked contents back to paths
         reranked_paths = [
