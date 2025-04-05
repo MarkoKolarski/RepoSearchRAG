@@ -81,11 +81,6 @@ python main.py --generate_summaries --use_large_summarizer
 
 ---
 
-Let me know if you'd like me to generate a visual CLI help table or auto-generate a markdown table from the parser itself!
-
-
----
-
 ### 🧪 Run Evaluation
 
 You can evaluate the system using the `evaluate_coderag.py` script. The evaluation is based on the **Recall@K** metric and compares retrieved results with ground truth from a dataset.
