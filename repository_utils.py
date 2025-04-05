@@ -7,24 +7,17 @@ import multiprocessing
 from typing import Any, Dict, List, Optional, Union, Tuple
 from collections import OrderedDict
 from argparse import Namespace
-
-
-# Third-Party Imports
 import nltk
 import chardet
 import numpy as np
 import torch
 from git import Repo
-from tqdm import tqdm
 from nltk.corpus import wordnet
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import google.generativeai as genai
-
-# Local Imports
 from listwise_reranker import ListwiseReranker
 
-# Ensure required NLTK resources are available
 nltk.download('punkt', quiet=True)
 nltk.download('wordnet', quiet=True)
 
@@ -265,7 +258,7 @@ class LRUCache:
         """
         if key in self.cache:
             value = self.cache.pop(key)
-            self.cache[key] = value  # Re-insert to mark as recently used
+            self.cache[key] = value
             self.hits += 1
             return value
 
@@ -285,27 +278,9 @@ class LRUCache:
         if key in self.cache:
             del self.cache[key]
         elif len(self.cache) >= self.capacity:
-            self.cache.popitem(last=False)  # Remove least recently used item
+            self.cache.popitem(last=False)
 
         self.cache[key] = value
-
-    def get_stats(self) -> dict:
-        """
-        Return cache performance statistics.
-
-        Returns:
-            dict: Dictionary containing cache capacity, size, hit/miss count, and hit rate.
-        """
-        total_requests = self.hits + self.misses
-        hit_rate = self.hits / total_requests if total_requests > 0 else 0.0
-
-        return {
-            "capacity": self.capacity,
-            "current_size": len(self.cache),
-            "hits": self.hits,
-            "misses": self.misses,
-            "hit_rate": hit_rate
-        }
 
 
 class AdvancedSummarizer:
@@ -429,7 +404,7 @@ class AdvancedSummarizer:
     
     def _summarize_with_local_model(self, text: str, prompt_template: str) -> str:
         """Generate summary using local model."""
-        max_input_length = self.tokenizer.model_max_length - 50  # Leave room for prompt
+        max_input_length = self.tokenizer.model_max_length - 50
         input_ids = self.tokenizer.encode(text, truncation=True, max_length=max_input_length)
         truncated_text = self.tokenizer.decode(input_ids, skip_special_tokens=True)
         
@@ -482,8 +457,8 @@ class AdvancedSummarizer:
             return {
                 'module_type': module_context,
                 'language': lang,
-                'imports': imports[:5],  # Limit to top 5
-                'exports': exports[:5],  # Limit to top 5
+                'imports': imports[:5],
+                'exports': exports[:5],
                 'llm_summary': llm_summary
             }
         
@@ -632,7 +607,7 @@ Focus on the main topic and key points.
             print(f"Text summary error: {e}")
             return {
                 'type': 'text',
-                'summary': text[:300]  # Fallback to truncation
+                'summary': text[:300]
             }
 
     def generate_summary(self, text: str, file_path: str) -> str:
@@ -651,7 +626,7 @@ Focus on the main topic and key points.
             return f"File not found: {file_path}"
         
         # Truncate very long texts for processing efficiency
-        text = text[:3000]  # Increased limit for LLM context
+        text = text[:3000]
         
         try:
             file_ext = os.path.splitext(file_path)[1].lower()
@@ -779,10 +754,8 @@ class AdvancedCodeRAGSystem:
         self.query_embedding_cache = LRUCache(capacity=cache_capacity)
         self.content_embedding_cache = LRUCache(capacity=cache_capacity)
 
-        # Setup retrieval strategy
         self._setup_retrieval_strategy(retrieval_strategy)
 
-        # Flag to ensure the message is printed only once
         self._processing_message_shown = False
 
     def _setup_retrieval_strategy(self, retrieval_strategy: str) -> None:
@@ -934,7 +907,7 @@ class AdvancedCodeRAGSystem:
                 
             # Add bonus for directory depth
             depth = path.count('/') + path.count('\\')
-            if depth <= 2:  # Root or near-root files
+            if depth <= 2:
                 bonus *= 1.2
                 
             path_bonuses.append(bonus)
@@ -1096,7 +1069,6 @@ class AdvancedCodeRAGSystem:
         content_list, file_paths = self._prepare_contents(file_contents)
         
         # Use cached embeddings for content and query
-        start_time = time.time()
         embeddings = self._get_cached_embeddings(content_list, self.content_embedding_cache)
         query_embedding = self._get_cached_embedding(clean_query, self.query_embedding_cache)
         
@@ -1303,7 +1275,7 @@ class RAGEvaluator:
         self.ground_truth = ground_truth
         
         # Multi-stage similarity thresholds from strict to loose matching
-        self.similarity_thresholds = similarity_thresholds or [0.9, 0.7, 0.5, 0.3]
+        self.similarity_thresholds = similarity_thresholds or [0.9, 0.7, 0.5]
         
         # Initialize embedding model for semantic matching
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -1326,9 +1298,7 @@ class RAGEvaluator:
         # Process each part: remove file extensions and normalize
         normalized_parts = []
         for part in context_parts:
-            # Remove file extension
             part_without_extension = re.sub(r'\.[^.]+$', '', part)
-            # Replace underscores with spaces and convert to lowercase
             normalized_part = part_without_extension.replace('_', ' ').lower()
             normalized_parts.append(normalized_part)
         
@@ -1474,40 +1444,4 @@ class RAGEvaluator:
                 if similarity >= threshold:
                     return True
                     
-        return False
-    
-    def _count_matched_files(self, expected_files: List[str], retrieved_files: List[str]) -> int:
-        """
-        Count how many expected files match with retrieved files using multi-stage matching.
-        
-        Args:
-            expected_files: List of expected file paths
-            retrieved_files: List of retrieved file paths
-            
-        Returns:
-            Count of matched files
-        """
-        matched_count = 0
-        
-        for expected_file in expected_files:
-            if self._is_file_matched(expected_file, retrieved_files):
-                matched_count += 1
-                
-        return matched_count
-    
-    def _is_file_matched(self, expected_file: str, retrieved_files: List[str]) -> bool:
-        """
-        Check if an expected file is matched in the retrieved files using progressive thresholds.
-        """
-        if not retrieved_files:
-            return False
-            
-        # Calculate best match score once
-        best_score = self.find_best_match_score(expected_file, retrieved_files)
-        
-        # Check against thresholds from strict to loose
-        for threshold in self.similarity_thresholds:
-            if best_score >= threshold:
-                return True
-                
         return False

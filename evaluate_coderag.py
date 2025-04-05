@@ -168,14 +168,14 @@ class CodeRAGEvaluator:
             Dictionary containing all evaluation metrics
         """
         recall = self.evaluator.calculate_recall(retrieved_results, self.top_k)
-        #precision = self.evaluator.calculate_precision(retrieved_results, self.top_k)
+        precision = self.evaluator.calculate_precision(retrieved_results, self.top_k)
         avg_query_time = sum(query_times) / len(query_times) if query_times else 0
         total_time = time.time() - start_time
         
         return {
             "strategy": self.retrieval_strategy,
             "recall": recall,
-            #"precision": precision,
+            "precision": precision,
             "average_query_time": avg_query_time,
             "total_time": total_time,
             "retrieved_results": retrieved_results
@@ -210,7 +210,7 @@ def run_evaluation(evaluator, top_k):
     print(f"\nEvaluation Results:")
     print(f"  Strategy: {results['strategy']}")
     print(f"  Recall@{top_k}: {results['recall']:.4f}")
-    #print(f"  Precision@{top_k}: {results['precision']:.4f}")
+    print(f"  Precision@{top_k}: {results['precision']:.4f}")
     print(f"  Average Query Time: {results['average_query_time']:.4f} seconds")
     print(f"  Total Evaluation Time: {results['total_time']:.4f} seconds")
     
