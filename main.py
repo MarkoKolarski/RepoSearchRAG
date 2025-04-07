@@ -1,98 +1,117 @@
 import argparse
 import traceback
+from argparse import Namespace
 from repository_utils import (
-    clone_repository, prepare_repository_files, RepositoryEmbedder,
-    Retriever, QueryExpander, LLMSummarizer, RAGEvaluator
+    AdvancedCodeRAGSystem,
+    clone_repository,
+    prepare_repository_files,
+    interactive_query_loop,
+    initialize_summarizer
 )
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="RAG pipeline for repository analysis")
-    parser.add_argument("--repo_url", type=str, default="https://github.com/viarotel-org/escrcpy", help="GitHub repository URL")
-    parser.add_argument("--repo_path", type=str, default="repository", help="Local repository path")
-    parser.add_argument("--top_k", type=int, default=10, help="Number of top search results")
+
+def parse_args() -> Namespace:
+    """
+    Parse command-line arguments for the Advanced CodeRAG system.
+    """
+    parser = argparse.ArgumentParser(
+        description="Advanced CodeRAG: Repository Question Answering System"
+    )
+
+    # Repository options
+    parser.add_argument(
+        "--repo_url",
+        type=str,
+        default="https://github.com/viarotel-org/escrcpy",
+        help="GitHub repository URL to clone"
+    )
+    parser.add_argument(
+        "--repo_path",
+        type=str,
+        default="repository",
+        help="Local path where the repository will be stored"
+    )
+
+    # Retrieval configuration
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=10,
+        help="Number of top search results to retrieve"
+    )
+    parser.add_argument(
+        "--retrieval_strategy",
+        type=str,
+        default="diverse",
+        choices=["default", "probabilistic", "diverse"],
+        help="Retrieval strategy to use for document selection"
+    )
+
+    # Summarization options
+    parser.add_argument(
+        "--generate_summaries",
+        action="store_true",
+        help="Enable generation of file content summaries"
+    )
+    parser.add_argument(
+        "--use_large_summarizer",
+        action="store_true",
+        help="Use a larger local summarization model (more accurate, less efficient)"
+    )
+    parser.add_argument(
+        "--use_gemini",
+        action="store_true",
+        help="Use the Google Gemini API for summarization"
+    )
+    parser.add_argument(
+        "--gemini_api_key",
+        type=str,
+        help="Google Gemini API key (or set the GOOGLE_API_KEY environment variable)"
+    )
+    parser.add_argument(
+        "--gemini_model",
+        type=str,
+        default="gemini-1.5-flash",
+        help="Google Gemini model to use (default: gemini-1.5-flash)"
+    )
+
     return parser.parse_args()
 
+
 def main():
+    """
+    Main execution function for the Advanced CodeRAG system.
+    """
     try:
-        # Step 1: Clone Repository
         args = parse_args()
-        cloned_path = clone_repository(args.repo_url, args.repo_path)
-        
-        if not cloned_path:
-            print("Failed to clone repository. Exiting.")
+
+        # Step 1: Initialize summarizer if needed
+        summarizer = initialize_summarizer(args)
+
+        # Step 2: Clone and index the repository
+        repo_path = clone_repository(args.repo_url, args.repo_path)
+        if not repo_path:
+            print("Repository cloning failed.")
             return
 
-        repository_files = prepare_repository_files(cloned_path)
-        
-        if not repository_files:
-            print("No files found in the repository. Exiting.")
+        repo_files = prepare_repository_files(repo_path)
+        if not repo_files:
+            print("No files found in the repository.")
             return
 
-        # Step 2: Create Embeddings
-        embedder = RepositoryEmbedder()
-        embedder.create_embeddings(repository_files)
-        
-        retriever = Retriever(embedder)
-        query_expander = QueryExpander()
-        llm_summarizer = LLMSummarizer()
+        # Step 3: Initialize RAG system
+        rag_system = AdvancedCodeRAGSystem(
+            retrieval_strategy=args.retrieval_strategy,
+            summarizer=summarizer
+        )
 
-        # Example queries for testing
-        test_queries = {
-            "android screen recording": [
-                "repository\\src\\composables\\useScreenshotAction\\index.js",
-                "repository\\README.md"
-            ],
-            "device connection": [
-                "repository\\electron\\exposes\\adb\\helpers\\scanner\\index.js",
-                "repository\\src\\dicts\\device\\index.js"
-            ]
-        }
-
-        evaluator = RAGEvaluator(test_queries)
-        retrieved_results = {}
-
-        for query in test_queries.keys():
-            try:
-                # Expand queries
-                expanded_queries = query_expander.generate_related_queries(query)
-                results = []
-
-                # Retrieve results for each expanded query
-                for expanded_query in expanded_queries:
-                    query_results = retriever.retrieve(expanded_query, args.top_k)
-                    results.extend(query_results)
-
-                # Remove duplicates and truncate
-                results = list(dict.fromkeys(results))[:args.top_k]
-                retrieved_results[query] = results
-
-                print(f"\nQuery: {query}")
-                
-                # Process and summarize results
-                for result in results:
-                    try:
-                        with open(result, 'r', encoding='utf-8', errors='replace') as f:
-                            file_content = f.read()
-                            
-                            # Limit file content if extremely large
-                            if len(file_content) > 1000:
-                                file_content = file_content[:1000]
-                            
-                            summary = llm_summarizer.generate_summary(file_content)
-                            print(f"File: {result}")
-                            print(f"Summary: {summary}\n")
-                    except Exception as file_error:
-                        print(f"Error processing {result}: {file_error}")
-
-            except Exception as query_error:
-                print(f"Error processing query {query}: {query_error}")
-
-        # Generate evaluation report
-        evaluator.generate_report(retrieved_results)
+        # Step 4: Start interactive loop
+        interactive_query_loop(rag_system, repo_files, args)
 
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"[Fatal Error] Unexpected error occurred: {e}")
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
