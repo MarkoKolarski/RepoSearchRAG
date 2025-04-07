@@ -124,10 +124,10 @@ The evaluation dataset should be a `.json` file with the following structure:
 ```json
 {
   "strategy": "diverse",
-  "recall_strict": 0.6944444444444444,
+  "recall_strict": 0.7361,
   "recall_extended": 1.0,
-  "average_query_time": 6.977300868314855,
-  "total_time": 271.0460500717163,
+  "average_query_time": 6.2093,
+  "total_time": 251.1481,
   "retrieved_results": {
     "Question 1": [ "retrieved/file1", "retrieved/file2", ... ],
     "Question 2": [ "retrieved/file1", "retrieved/file2", ... ],

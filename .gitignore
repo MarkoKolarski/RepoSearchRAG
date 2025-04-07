@@ -53,3 +53,8 @@ yarn-error.log
 # Evaluation output (custom)
 # ========================
 evaluation_results.json
+
+# ========================
+# Custom: Ignore "repository" directory
+# ========================
+repository/
