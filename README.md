@@ -124,9 +124,10 @@ The evaluation dataset should be a `.json` file with the following structure:
 ```json
 {
   "strategy": "diverse",
-  "recall": 0.9861,
-  "average_query_time": 4.80809211730957,
-  "total_time": 203.51548767089844,
+  "recall_strict": 0.6944444444444444,
+  "recall_extended": 1.0,
+  "average_query_time": 6.977300868314855,
+  "total_time": 271.0460500717163,
   "retrieved_results": {
     "Question 1": [ "retrieved/file1", "retrieved/file2", ... ],
     "Question 2": [ "retrieved/file1", "retrieved/file2", ... ],
@@ -198,7 +199,8 @@ Top 10 relevant files for: "How does the device pairing work?"
 
 **📊 Output Example:**
 ```
-Recall@10: 0.9861
+Recall@10 (Strict semantic match, thresholds ≥ 0.5): 0.7222
+Recall@10 (Extended match, including weaker matches ≥ 0.3): 1.0000
 ```
 
 ---

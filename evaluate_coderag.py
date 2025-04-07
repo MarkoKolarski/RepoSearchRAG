@@ -158,24 +158,24 @@ class CodeRAGEvaluator:
     def _calculate_metrics(self, retrieved_results, query_times, start_time):
         """
         Calculate performance metrics based on retrieval results.
-        
-        Args:
-            retrieved_results: Dictionary of query->results mappings
-            query_times: List of individual query processing times
-            start_time: Timestamp when evaluation started
-            
-        Returns:
-            Dictionary containing all evaluation metrics
         """
-        recall = self.evaluator.calculate_recall(retrieved_results, self.top_k)
-        precision = self.evaluator.calculate_precision(retrieved_results, self.top_k)
+        # Calculate recall using standard and extended thresholds
+        standard_thresholds = [0.9, 0.7, 0.5]
+        extended_thresholds = [0.9, 0.7, 0.5, 0.3]
+
+        recall_standard = self.evaluator.calculate_recall_with_thresholds(retrieved_results, self.top_k, standard_thresholds)
+        recall_extended = self.evaluator.calculate_recall_with_thresholds(retrieved_results, self.top_k, extended_thresholds)
+        
+        #precision = self.evaluator.calculate_precision(retrieved_results, self.top_k)
+
         avg_query_time = sum(query_times) / len(query_times) if query_times else 0
         total_time = time.time() - start_time
-        
+
         return {
             "strategy": self.retrieval_strategy,
-            "recall": recall,
-            "precision": precision,
+            "recall_strict": recall_standard,
+            "recall_extended": recall_extended,
+            #"precision": precision,
             "average_query_time": avg_query_time,
             "total_time": total_time,
             "retrieved_results": retrieved_results
@@ -183,37 +183,43 @@ class CodeRAGEvaluator:
 
     def save_results(self, output_path: str = "evaluation_results.json"):
         """
-        Save evaluation results to a JSON file.
+        Save evaluation results to a JSON file with rounded floats.
         
         Args:
             output_path: Path where results will be saved
         """
+        def round_floats(obj):
+            if isinstance(obj, float):
+                return round(obj, 4)
+            elif isinstance(obj, dict):
+                return {k: round_floats(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [round_floats(elem) for elem in obj]
+            else:
+                return obj
+
+        rounded_results = round_floats(self.results)
+        
         with open(output_path, 'w', encoding='utf-8') as file:
-            json.dump(self.results, file, indent=2)
+            json.dump(rounded_results, file, indent=2)
+        
         print(f"Results saved to {output_path}")
+
 
 def run_evaluation(evaluator, top_k):
     """
     Run the evaluation and display the results.
-    
-    Args:
-        evaluator: The CodeRAGEvaluator instance
-        top_k: Number of top results to consider
-        
-    Returns:
-        Dictionary of evaluation results
     """
     print("Running evaluation...")
     results = evaluator.evaluate()
-    
-    # Print formatted results
-    print(f"\nEvaluation Results:")
-    print(f"  Strategy: {results['strategy']}")
-    print(f"  Recall@{top_k}: {results['recall']:.4f}")
-    print(f"  Precision@{top_k}: {results['precision']:.4f}")
-    print(f"  Average Query Time: {results['average_query_time']:.4f} seconds")
-    print(f"  Total Evaluation Time: {results['total_time']:.4f} seconds")
-    
+
+    print("\nEvaluation Results:")
+    print(f"Retrieval Strategy: {results['strategy']}")
+    print(f"Recall@{top_k} (Strict semantic match, thresholds ≥ 0.5): {results['recall_strict']:.4f}")
+    print(f"Recall@{top_k} (Extended match, including weaker matches ≥ 0.3): {results['recall_extended']:.4f}")
+    print(f"Average Query Time: {results['average_query_time']:.4f} seconds")
+    print(f"Total Evaluation Time: {results['total_time']:.4f} seconds")
+
     return results
 
 def parse_args():
@@ -261,10 +267,8 @@ def parse_args():
 def main():
 
     try:
-        # Parse arguments
         args = parse_args()
 
-        # Initialize evaluator
         evaluator = CodeRAGEvaluator(
             repo_url=args.repo_url,
             repo_path=args.repo_path,
@@ -280,7 +284,6 @@ def main():
          # Run evaluation and display results
         results = run_evaluation(evaluator, args.top_k)
 
-        # Save results
         evaluator.results = results
         evaluator.save_results(args.output)
 

@@ -801,15 +801,22 @@ class AdvancedCodeRAGSystem:
             print(f"Done (took {time.time() - start_time:.2f} seconds)")
         return self._reranker
 
-    def _default_retrieval(self, embeddings: np.ndarray, query_embedding: np.ndarray, top_k: int) -> List[int]:
+    def _default_retrieval(
+        self, 
+        embeddings: np.ndarray, 
+        query_embedding: np.ndarray, 
+        file_paths: List[str],
+        top_k: int
+    ) -> List[int]:
         """
         Default cosine similarity retrieval.
-        
+
         Args:
             embeddings: Document embeddings
             query_embedding: Query embedding
+            file_paths: File paths (not used in this strategy)
             top_k: Number of top results to retrieve
-        
+
         Returns:
             Indices of top-k documents
         """
@@ -817,15 +824,22 @@ class AdvancedCodeRAGSystem:
         top_indices = similarities.argsort()[-top_k:][::-1]
         return top_indices
 
-    def _probabilistic_retrieval(self, embeddings: np.ndarray, query_embedding: np.ndarray, top_k: int) -> List[int]:
+    def _probabilistic_retrieval(
+        self, 
+        embeddings: np.ndarray, 
+        query_embedding: np.ndarray, 
+        file_paths: List[str],
+        top_k: int
+    ) -> List[int]:
         """
         Probabilistic relevance retrieval.
-        
+
         Args:
             embeddings: Document embeddings
             query_embedding: Query embedding
+            file_paths: File paths (not used in this strategy)
             top_k: Number of top results to retrieve
-        
+
         Returns:
             Indices of top-k documents
         """
@@ -839,7 +853,7 @@ class AdvancedCodeRAGSystem:
         embeddings: np.ndarray, 
         query_embedding: np.ndarray, 
         file_paths: List[str], 
-        top_k: int = 15
+        top_k: int = 10
     ) -> List[int]:
         """
         Optimized diverse retrieval strategy with refined parameters.
@@ -854,8 +868,8 @@ class AdvancedCodeRAGSystem:
             List of selected document indices
         """
         # Control parameters
-        lambda_relevance = 0.75
-        lambda_diversity = 0.25
+        lambda_relevance = 0.80
+        lambda_diversity = 0.20
         
         # Calculate similarities and apply bonus
         similarities = np.dot(embeddings, query_embedding.T).flatten()
@@ -943,8 +957,6 @@ class AdvancedCodeRAGSystem:
                 # First document - select highest relevance
                 best_index = np.argmax(weighted_similarities)
             else:
-                # Calculate MMR scores with dynamic lambda adjustment
-                # As we select more documents, gradually favor diversity more
                 current_lambda_rel = lambda_relevance * (1 - (len(selected_indices) / (top_k * 2)))
                 current_lambda_div = lambda_diversity * (1 + (len(selected_indices) / (top_k * 2)))
                 
@@ -1031,6 +1043,8 @@ class AdvancedCodeRAGSystem:
     def _prepare_contents(self, file_contents: Dict[str, str]) -> Tuple[List[str], List[str]]:
         """
         Prepare content list with context and extract file paths.
+        Enhanced to extract key parts from files (comments, function definitions, etc.) 
+        instead of just the first 500 characters.
         
         Args:
             file_contents: Dictionary of file paths and contents
@@ -1038,51 +1052,202 @@ class AdvancedCodeRAGSystem:
         Returns:
             Tuple of (content_list, file_paths)
         """
-        content_list = [
-            f"File Path: {path}\nContent Context: {content[:500]}"
-            for path, content in file_contents.items()
-        ]
+
+        content_list = []
         file_paths = list(file_contents.keys())
+        
+        for path, content in file_contents.items():
+            if not content or len(content.strip()) == 0:
+                content_list.append(f"File Path: {path}\nContent Context: [Empty File]")
+                continue
+                
+            file_ext = os.path.splitext(path)[1].lower()
+            
+            # Extract key content based on file type
+            key_content = self._extract_key_content(content, file_ext)
+            
+            # Prepare the final context
+            content_list.append(f"File Path: {path}\nContent Context: {key_content}")
+        
         return content_list, file_paths
+
+    def _extract_key_content(self, content: str, file_ext: str) -> str:
+        """
+        Extract key content from file based on file type.
+        Focuses on comments, function definitions, class definitions, and other important parts.
+        
+        Args:
+            content: The file content
+            file_ext: File extension to determine file type
+            
+        Returns:
+            String containing extracted key content
+        """
+        
+        # Return empty string for empty content
+        if not content or len(content.strip()) == 0:
+            return ""
+            
+        # Maximum length for extracted content
+        MAX_CONTENT_LENGTH = 2000
+        
+        # For code files (Python, JavaScript, TypeScript, etc.)
+        if file_ext in ['.py', '.js', '.jsx', '.ts', '.tsx', '.go', '.java', '.c', '.cpp', '.cs']:
+            extracted_parts = []
+            
+            # Extract module-level docstrings or comments at the top
+            header_match = re.search(r'(?:^""".*?"""|^\'\'\'.*?\'\'\'|^/\*\*?.*?\*/|^//.*(?:\n//.*)*)', 
+                                    content, re.DOTALL | re.MULTILINE)
+            if header_match:
+                extracted_parts.append(header_match.group(0).strip())
+                
+            # Extract imports/includes for understanding dependencies
+            if file_ext == '.py':
+                imports = re.findall(r'^(?:import|from)\s+.*$', content, re.MULTILINE)
+                if imports:
+                    extracted_parts.append("\n".join(imports[:10]))  # Limit to 10 imports
+            elif file_ext in ['.js', '.jsx', '.ts', '.tsx']:
+                imports = re.findall(r'^(?:import|require)\s+.*$', content, re.MULTILINE)
+                if imports:
+                    extracted_parts.append("\n".join(imports[:10]))
+                    
+            # Extract class definitions with their docstrings
+            class_matches = re.finditer(r'class\s+(\w+).*?(?::\s*|{)((?:""".*?"""|\'\'\'.*?\'\'\'|/\*\*?.*?\*/|//.*(?:\n//.*)*)?)', 
+                                        content, re.DOTALL)
+            for match in class_matches:
+                class_def = f"class {match.group(1)}"
+                if match.group(2) and len(match.group(2).strip()) > 0:
+                    class_def += f": {match.group(2).strip()}"
+                extracted_parts.append(class_def)
+                
+            # Extract function definitions with their docstrings
+            func_matches = re.finditer(r'(?:def|function)\s+(\w+).*?(?::\s*|{)((?:""".*?"""|\'\'\'.*?\'\'\'|/\*\*?.*?\*/|//.*(?:\n//.*)*)?)', 
+                                    content, re.DOTALL)
+            for match in func_matches:
+                func_def = f"{'def' if file_ext == '.py' else 'function'} {match.group(1)}"
+                if match.group(2) and len(match.group(2).strip()) > 0:
+                    func_def += f": {match.group(2).strip()}"
+                extracted_parts.append(func_def)
+                
+            # Add variable definitions and constants that might be important
+            const_matches = re.findall(r'^(?:const|let|var|[A-Z_]+\s*=)\s*.*$', content, re.MULTILINE)
+            if const_matches:
+                extracted_parts.append("\n".join(const_matches[:5]))  # Limit to 5 constants
+                
+        # For markup files (HTML, XML, etc.)
+        elif file_ext in ['.html', '.xml']:
+            extracted_parts = []
+            
+            # Extract title and meta tags
+            title_match = re.search(r'<title>(.*?)</title>', content, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                extracted_parts.append(f"Title: {title_match.group(1).strip()}")
+                
+            meta_matches = re.findall(r'<meta.*?name=["\'](.+?)["\'].*?content=["\'](.+?)["\'].*?>', 
+                                    content, re.IGNORECASE | re.DOTALL)
+            if meta_matches:
+                for name, content_val in meta_matches[:5]:  # Limit to 5 meta tags
+                    extracted_parts.append(f"Meta: {name} - {content_val}")
+                    
+            # Extract headings
+            heading_matches = re.findall(r'<h[1-3][^>]*>(.*?)</h[1-3]>', content, re.IGNORECASE | re.DOTALL)
+            if heading_matches:
+                extracted_parts.append("Headings: " + " | ".join(h.strip() for h in heading_matches[:5]))
+                
+        # For markdown and text files
+        elif file_ext in ['.md', '.txt', '.rst']:
+            extracted_parts = []
+            
+            # Extract headings
+            heading_matches = re.findall(r'^#+\s+(.+)$|^(.+)\n[=\-]{2,}$', content, re.MULTILINE)
+            if heading_matches:
+                headings = []
+                for h1, h2 in heading_matches[:5]:  # Limit to 5 headings
+                    headings.append(h1 if h1 else h2)
+                extracted_parts.append("Headings: " + " | ".join(headings))
+                
+            # Extract first paragraph as summary
+            para_match = re.search(r'(?:^|\n\n)([^#\n].+?)(?:\n\n|$)', content, re.DOTALL)
+            if para_match:
+                extracted_parts.append("Summary: " + para_match.group(1).replace('\n', ' ').strip())
+                
+        # For configuration files
+        elif file_ext in ['.json', '.yml', '.yaml', '.ini', '.cfg', '.conf']:
+            # For these files, the structure is often important, so take a sample
+            lines = content.split('\n')
+            sample_lines = lines[:min(20, len(lines))]  # Take up to 20 lines
+            extracted_parts = ["\n".join(sample_lines)]
+            
+        # Fallback for other file types or if extraction failed
+        else:
+            # Take first chunk and a sample from the middle
+            lines = content.split('\n')
+            
+            if len(lines) <= 30:
+                extracted_parts = [content[:1000]]  # Just take the first 1000 chars for small files
+            else:
+                start_chunk = "\n".join(lines[:15])
+                
+                # Find a middle chunk that's not just whitespace or repeated patterns
+                middle_start = len(lines) // 3
+                middle_chunk = "\n".join(lines[middle_start:middle_start+10])
+                
+                extracted_parts = [start_chunk, "...", middle_chunk]
+        
+        # Join all extracted parts and truncate if needed
+        result = "\n".join(extracted_parts)
+        if len(result) > MAX_CONTENT_LENGTH:
+            result = result[:MAX_CONTENT_LENGTH-3] + "..."
+            
+        return result
 
     def advanced_retrieve(
         self, 
         query: str, 
         file_contents: Dict[str, str], 
-        top_k: int = 10
+        top_k: int = 10,
+        retrieval_k: int = 10
     ) -> List[str]:
         """
-        Enhanced retrieval with context-aware techniques and caching.
-        
+        Enhanced retrieval with reranking and caching.
+
         Args:
-            query: Search query
-            file_contents: Dictionary of file paths and contents
-            top_k: Number of top results to retrieve
-        
+            query (str): Natural language query
+            file_contents (Dict[str, str]): Mapping from file paths to file contents
+            top_k (int): Number of final results to return (after reranking)
+            retrieval_k (int): Number of candidates to retrieve before reranking
+
         Returns:
-            Paths of retrieved files
+            List[str]: Reranked top-k file paths
         """
-        # Preprocess query: remove special characters, lowercase
+        # Step 1: Clean query
         clean_query = re.sub(r'[^a-zA-Z0-9\s]', '', query).lower()
-        
-        # Prepare content list with context
+
+        # Step 2: Prepare file content and paths
         content_list, file_paths = self._prepare_contents(file_contents)
-        
-        # Use cached embeddings for content and query
+
+        # Step 3: Get embeddings
         embeddings = self._get_cached_embeddings(content_list, self.content_embedding_cache)
         query_embedding = self._get_cached_embedding(clean_query, self.query_embedding_cache)
-        
-        # Execute retrieval strategy
-        top_indices = self._execute_retrieval_strategy(
-            embeddings, query_embedding, file_paths, top_k
+
+        # Step 4: Retrieve top-N candidate indices
+        top_indices = self.retrieval_strategy(
+            embeddings, query_embedding, file_paths, top_k=retrieval_k
         )
-        
-        # Get retrieved contents and paths
+
+        # Step 5: Gather retrieved contents and paths
         retrieved_contents = [content_list[idx] for idx in top_indices]
         retrieved_paths = [file_paths[idx] for idx in top_indices]
-        
-        # Perform reranking
-        return self._rerank_results(clean_query, retrieved_contents, retrieved_paths, top_k)
+
+        # Step 6: Rerank and return final top-k paths
+        reranked_paths = self._rerank_results(
+            query=clean_query,
+            retrieved_contents=retrieved_contents,
+            retrieved_paths=retrieved_paths,
+            top_k=top_k
+        )
+
+        return reranked_paths
     
     def _execute_retrieval_strategy(
         self, 
@@ -1120,31 +1285,34 @@ class AdvancedCodeRAGSystem:
         top_k: int
     ) -> List[str]:
         """
-        Rerank retrieved results.
-        
+        Rerank retrieved results using a cross-encoder reranker.
+
         Args:
-            query: Search query
-            retrieved_contents: Retrieved content texts
-            retrieved_paths: Retrieved file paths
-            top_k: Number of results to return
-            
+            query (str): Natural language query
+            retrieved_contents (List[str]): Retrieved document texts
+            retrieved_paths (List[str]): Corresponding file paths
+            top_k (int): Number of final results to return
+
         Returns:
-            Reranked file paths
+            List[str]: Reranked file paths
         """
-        # Advanced reranking
+        # Perform reranking using cross-encoder (returns top_k contents)
         reranked_contents = self.reranker.rerank(query, retrieved_contents, top_k)
 
         # Ensure the processing message is printed only once
         if not self._processing_message_shown:
             print("Processing queries... please wait.")
             self._processing_message_shown = True
-        
-        # Match reranked contents back to paths
-        reranked_paths = [
-            path for content, path in zip(retrieved_contents, retrieved_paths)
-            if content in reranked_contents
-        ]
-        
+
+        # Match reranked contents back to original paths using exact indexing
+        reranked_paths = []
+        for reranked in reranked_contents:
+            try:
+                idx = retrieved_contents.index(reranked)
+                reranked_paths.append(retrieved_paths[idx])
+            except ValueError:
+                continue
+
         return reranked_paths
 
 
@@ -1254,194 +1422,154 @@ class QueryExpander:
 
 class RAGEvaluator:
     """
-    Evaluator for Retrieval-Augmented Generation (RAG) systems with semantic matching capabilities.
-    
-    This class provides methods to evaluate RAG systems by comparing retrieved results against
-    ground truth using semantic similarity metrics.
+    Evaluates the performance of a Retrieval-Augmented Generation (RAG) system
+    using semantic similarity and precision/recall metrics.
     """
-    
+
     def __init__(
         self, 
         ground_truth: Dict[str, List[str]], 
         similarity_thresholds: Optional[List[float]] = None
     ):
         """
-        Initialize the RAG evaluator with ground truth data and similarity thresholds.
-        
+        Initialize the evaluator with ground truth data and similarity thresholds.
+
         Args:
-            ground_truth: Dictionary mapping queries to lists of expected file paths
-            similarity_thresholds: List of similarity thresholds for multi-stage matching
+            ground_truth (Dict[str, List[str]]): Mapping of queries to expected file paths.
+            similarity_thresholds (Optional[List[float]]): Thresholds for semantic similarity.
         """
         self.ground_truth = ground_truth
-        
-        # Multi-stage similarity thresholds from strict to loose matching
         self.similarity_thresholds = similarity_thresholds or [0.9, 0.7, 0.5]
-        
-        # Initialize embedding model for semantic matching
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def extract_semantic_context(self, file_path: str) -> str:
         """
-        Extract meaningful semantic context from a file path.
-        
+        Extract a semantic context string from a file path.
+
         Args:
-            file_path: File path to extract context from
-        
+            file_path (str): Path to the file.
+
         Returns:
-            Semantic context string derived from path components
+            str: Semantic context derived from the file path.
         """
         path_parts = file_path.split(os.path.sep)
-        
-        # Use the last 3 path components for context
         context_parts = path_parts[-3:] if len(path_parts) >= 3 else path_parts
-        
-        # Process each part: remove file extensions and normalize
-        normalized_parts = []
-        for part in context_parts:
-            part_without_extension = re.sub(r'\.[^.]+$', '', part)
-            normalized_part = part_without_extension.replace('_', ' ').lower()
-            normalized_parts.append(normalized_part)
-        
-        # Join the normalized parts with spaces
-        context = ' '.join(normalized_parts)
-        
-        return context
+        normalized_parts = [
+            re.sub(r'\.[^.]+$', '', part).replace('_', ' ').lower()
+            for part in context_parts
+        ]
+        return ' '.join(normalized_parts)
 
     def calculate_semantic_similarity(self, file_path1: str, file_path2: str) -> float:
         """
-        Compute semantic similarity between two file paths.
-        
+        Calculate semantic similarity between two file paths.
+
         Args:
-            file_path1: First file path
-            file_path2: Second file path
-        
+            file_path1 (str): First file path.
+            file_path2 (str): Second file path.
+
         Returns:
-            Semantic similarity score between 0 and 1
+            float: Semantic similarity score between 0 and 1.
         """
-        # Extract semantic contexts
         context1 = self.extract_semantic_context(file_path1)
         context2 = self.extract_semantic_context(file_path2)
-        
-        # Compute embeddings
         embeddings = self.embedding_model.encode([context1, context2])
-        
-        # Compute cosine similarity
-        embedding1_norm = np.linalg.norm(embeddings[0])
-        embedding2_norm = np.linalg.norm(embeddings[1])
-        
-        # Avoid division by zero
-        if embedding1_norm == 0 or embedding2_norm == 0:
-            return 0.0
-            
-        similarity = np.dot(embeddings[0], embeddings[1]) / (embedding1_norm * embedding2_norm)
-        
-        return float(similarity)
+        norm1, norm2 = np.linalg.norm(embeddings[0]), np.linalg.norm(embeddings[1])
 
-    def find_best_match_score(self, expected_file: str, retrieved_files: List[str]) -> float:
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+
+        return float(np.dot(embeddings[0], embeddings[1]) / (norm1 * norm2))
+
+    def _is_relevant_file(
+        self, 
+        retrieved_file: str, 
+        expected_files: List[str], 
+        thresholds: List[float]
+    ) -> bool:
         """
-        Find the best semantic match score between an expected file and a list of retrieved files.
-        
+        Check if a retrieved file is relevant based on similarity thresholds.
+
         Args:
-            expected_file: The expected file path to match
-            retrieved_files: List of retrieved file paths to match against
-            
-        Returns:
-            Highest similarity score found
-        """
-        if not retrieved_files:
-            return 0.0
-            
-        similarity_scores = [
-            self.calculate_semantic_similarity(expected_file, retrieved_file)
-            for retrieved_file in retrieved_files
-        ]
-        
-        return max(similarity_scores)
+            retrieved_file (str): Retrieved file path.
+            expected_files (List[str]): List of expected file paths.
+            thresholds (List[float]): List of similarity thresholds.
 
-    def calculate_recall(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
+        Returns:
+            bool: True if the file is relevant, False otherwise.
+        """
+        return any(
+            self.calculate_semantic_similarity(retrieved_file, expected_file) >= threshold
+            for expected_file in expected_files
+            for threshold in thresholds
+        )
+
+    def calculate_recall_with_thresholds(
+        self, 
+        retrieved_results: Dict[str, List[str]], 
+        k: int, 
+        thresholds: List[float]
+    ) -> float:
+        """
+        Calculate recall at top-k with semantic similarity thresholds.
+
+        Args:
+            retrieved_results (Dict[str, List[str]]): Mapping of queries to retrieved file paths.
+            k (int): Number of top results to consider.
+            thresholds (List[float]): List of similarity thresholds.
+
+        Returns:
+            float: Recall score.
+        """
         total_relevant = 0
         total_expected = 0
-        
+
         for query, expected_files in self.ground_truth.items():
             retrieved_files = list(dict.fromkeys(retrieved_results.get(query, [])))[:k]
-            
-            # Check if there are any expected files
             matched = sum(
                 1 for expected in expected_files
                 if any(
                     self.calculate_semantic_similarity(expected, retrieved) >= threshold
                     for retrieved in retrieved_files
-                    for threshold in self.similarity_thresholds
+                    for threshold in thresholds
                 )
             )
-            
             total_relevant += matched
             total_expected += len(expected_files)
-        
+
         return total_relevant / total_expected if total_expected > 0 else 0.0
-    
-    def calculate_precision(self, retrieved_results: Dict[str, List[str]], k: int = 10) -> float:
+
+    def calculate_precision(
+        self, 
+        retrieved_results: Dict[str, List[str]], 
+        k: int = 10
+    ) -> float:
         """
-        Calculate precision using multi-stage semantic matching.
-        
+        Calculate precision at top-k.
+
         Args:
-            retrieved_results: Dictionary mapping queries to lists of retrieved file paths
-            k: Number of top results to consider
-        
+            retrieved_results (Dict[str, List[str]]): Mapping of queries to retrieved file paths.
+            k (int): Number of top results to consider.
+
         Returns:
-            Precision score between 0 and 1
+            float: Precision score.
         """
-        if not self.ground_truth:
-            return 0.0
-            
         query_precisions = []
-        
+
         for query, expected_files in self.ground_truth.items():
             if not expected_files:
                 continue
-                
+
             retrieved_files = retrieved_results.get(query, [])[:k]
             if not retrieved_files:
                 query_precisions.append(0.0)
                 continue
-                
-            # Count relevant documents among retrieved ones
-            relevant_count = 0
-            for retrieved_file in retrieved_files:
-                if self._is_relevant_file(retrieved_file, expected_files):
-                    relevant_count += 1
-            
-            # Calculate precision for this query
+
+            relevant_count = sum(
+                1 for retrieved in retrieved_files
+                if self._is_relevant_file(retrieved, expected_files, self.similarity_thresholds)
+            )
             query_precision = relevant_count / len(retrieved_files) if retrieved_files else 0.0
             query_precisions.append(query_precision)
-        
-        # Compute average precision across all queries
-        final_precision = np.mean(query_precisions) if query_precisions else 0.0
-        
-        return min(1.0, final_precision)
-    
-    def _is_relevant_file(self, retrieved_file: str, expected_files: List[str]) -> bool:
-        """
-        Check if a retrieved file is relevant by matching against expected files.
-        
-        Args:
-            retrieved_file: Retrieved file path to check
-            expected_files: List of expected (relevant) file paths
-            
-        Returns:
-            True if relevant, False otherwise
-        """
-        if not expected_files:
-            return False
-            
-        # Check if the retrieved file matches any expected file
-        for expected_file in expected_files:
-            # Try different similarity thresholds from strict to loose
-            for threshold in self.similarity_thresholds:
-                similarity = self.calculate_semantic_similarity(retrieved_file, expected_file)
-                
-                # If similarity is above threshold, consider it relevant
-                if similarity >= threshold:
-                    return True
-                    
-        return False
+
+        return min(1.0, np.mean(query_precisions)) if query_precisions else 0.0
