@@ -1,14 +1,23 @@
 # 🔍 LLM Listwise Reranker for CodeRAG
 
-**Internship Project — Retrieval-Augmented Generation (RAG) for Code Repositories**  
+![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
+![RAG](https://img.shields.io/badge/RAG-Retrieval%20Augmented%20Generation-orange)
+![LLM](https://img.shields.io/badge/LLM-Enabled-purple)
+![Listwise Reranker](https://img.shields.io/badge/Reranker-Listwise%20LLM--based-blueviolet)
+![Sentence Transformers](https://img.shields.io/badge/Embeddings-SentenceTransformers-important?logo=python)
+![Flan-T5](https://img.shields.io/badge/Summarization-FLAN--T5-green)
+![Gemini](https://img.shields.io/badge/Gemini-API%20Support-lightblue?logo=google)
+![Query Expansion](https://img.shields.io/badge/Query%20Expansion-WordNet%20%2B%20Code%20Terms-yellowgreen)
+![MMR](https://img.shields.io/badge/Diverse%20Retrieval-MMR-red)
+![Evaluation](https://img.shields.io/badge/Evaluation-Recall@K-critical)
+
+**Retrieval-Augmented Generation (RAG) for Code Repositories**  
 
 ---
 
 ## 🧠 Overview
 
 This project implements a **Retrieval-Augmented Generation (RAG)** system for **question-answering over a GitHub code repository**. It takes a GitHub URL as input, indexes the codebase, and allows users to ask natural language questions about the code. The system retrieves and **reranks relevant files** using advanced techniques such as **query expansion**, **diverse retrieval strategies**, and an **LLM-based listwise reranker**.
-
-> ✅ This implementation fully satisfies all required, additional and optional (bonus) features outlined in the task specification.
 
 ---
 
@@ -145,7 +154,6 @@ Each entry contains a natural language question and a list of expected relevant 
 
 ### 1️⃣ Complete Pipeline from Indexing to RAG
 
-**✔️ Requirement:** System must provide a full pipeline from indexing to retrieval, requiring only a GitHub URL.
 
 **💡 Implementation:**
 - Repository is cloned via `clone_repository()` in `repository_utils.py`.
@@ -156,8 +164,6 @@ Each entry contains a natural language question and a list of expected relevant 
 
 ### 2️⃣ Scope Limited to a Single Repository
 
-**✔️ Requirement:** System must work with `https://github.com/viarotel-org/escrcpy`.
-
 **💡 Implementation:**
 - The repo URL is passed as `--repo_url` argument.
 - The system is developed and tested specifically on the `escrcpy` repository for optimal results.
@@ -165,8 +171,6 @@ Each entry contains a natural language question and a list of expected relevant 
 ---
 
 ### 3️⃣ Natural Language Question Answering
-
-**✔️ Requirement:** Users can ask natural language questions and get relevant file paths.
 
 **💡 Implementation:**
 - `interactive_query_loop()` enables interactive Q&A.
@@ -189,8 +193,6 @@ Top 10 relevant files for: "How does the device pairing work?"
 ---
 
 ### 4️⃣ Evaluation with Recall@10
-
-**✔️ Requirement:** System should report Recall@10 scores.
 
 **💡 Implementation:**
 - Evaluation is done using `evaluate_coderag.py`.
@@ -272,14 +274,7 @@ Recall@10 (Extended match, including weaker matches ≥ 0.3): 1.0000
 
 ---
 
-### ✅ 2. Well-Documented Repository
-
-- README includes setup, usage, architecture, and evaluation.
-- All classes and functions are documented with docstrings.
-
----
-
-### ✅ 3. Latency/Quality Trade-Off Evaluation
+### ✅ 2. Latency/Quality Trade-Off Evaluation
 
 - Retrieval strategies allow users to balance speed vs. accuracy.
 - Evaluation script logs:
@@ -288,7 +283,7 @@ Recall@10 (Extended match, including weaker matches ≥ 0.3): 1.0000
 
 ---
 
-### ✅ 4. Switching Between LLM & Embedding Models
+### ✅ 3. Switching Between LLM & Embedding Models
 
 - `AdvancedSummarizer` supports:
   - Default local model (`flan-t5-small`)
@@ -298,18 +293,6 @@ Recall@10 (Extended match, including weaker matches ≥ 0.3): 1.0000
   - OpenAI embeddings
   - Cohere embeddings
   - Custom local embedding models
-
----
-
-## 🧪 Evaluation Criteria (Checklist)
-
-| Criteria                         | Status | Notes |
-|----------------------------------|--------|-------|
-| ✅ Functional RAG System         | ✅     | End-to-end pipeline implemented |
-| ✅ Accuracy: Recall@10           | ✅     | Achieves high scores |
-| ✅ Efficiency                    | ✅     | Multiprocessing and MMR retrieval |
-| ✅ Code Quality & Documentation  | ✅     | Modular, well-commented, and extensible |
-| ✅ Clear Usage Instructions      | ✅     | Provided in README |
 
 ---
 
@@ -326,20 +309,6 @@ Recall@10 (Extended match, including weaker matches ≥ 0.3): 1.0000
 ├── escrcpy-commits-generated.json   # Input dataset for evaluation
 └── evaluation_results.json          # Output results from evaluation (optional / generated)
 ```
-
----
-
-## ✅ Conclusion
-
-This project fully meets the goals of the internship task, offering a robust, modular, and extendable RAG system for question-answering over code repositories. It includes:
-
-- ✅ A complete end-to-end pipeline  
-- ✅ Strong retrieval performance (Recall@10)  
-- ✅ Modular support for LLMs and embeddings  
-- ✅ Advanced techniques: query expansion, reranking, summarization  
-- ✅ Clear documentation and easy-to-use scripts  
-
-> 🔧 If needed, the system can be easily extended to support multiple repositories, APIs, or UI components.
 
 ---
 
