@@ -4,8 +4,6 @@
 ![RAG](https://img.shields.io/badge/RAG-Retrieval%20Augmented%20Generation-orange)
 ![LLM](https://img.shields.io/badge/LLM-Enabled-purple)
 ![Listwise Reranker](https://img.shields.io/badge/Reranker-Listwise%20LLM--based-blueviolet)
-![Sentence Transformers](https://img.shields.io/badge/Embeddings-SentenceTransformers-important?logo=python)
-![Flan-T5](https://img.shields.io/badge/Summarization-FLAN--T5-green)
 ![Gemini](https://img.shields.io/badge/Gemini-API%20Support-lightblue?logo=google)
 ![Query Expansion](https://img.shields.io/badge/Query%20Expansion-WordNet%20%2B%20Code%20Terms-yellowgreen)
 ![MMR](https://img.shields.io/badge/Diverse%20Retrieval-MMR-red)
